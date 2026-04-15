@@ -6,3 +6,8 @@ client/dist/
 *.pem
 *.key
 trades.db
+trades.db-shm
+trades.db-wal
+.DS_Store
+.Rhistory
+.claude/
