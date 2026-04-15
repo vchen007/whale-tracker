@@ -1,0 +1,15 @@
+{
+  "name": "whale-tracker",
+  "version": "1.0.0",
+  "private": true,
+  "scripts": {
+    "install:all": "npm i --prefix server && npm i --prefix client",
+    "dev:server": "npm run dev --prefix server",
+    "dev:client": "npm run dev --prefix client",
+    "dev": "concurrently -n server,client -c cyan,magenta \"npm run dev:server\" \"npm run dev:client\"",
+    "start": "npm run start --prefix server"
+  },
+  "devDependencies": {
+    "concurrently": "^9.1.0"
+  }
+}
