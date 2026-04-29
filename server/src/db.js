@@ -24,23 +24,26 @@ export function initDb() {
     CREATE INDEX IF NOT EXISTS idx_trades_ts_ms ON trades (ts_ms DESC);
 
     CREATE TABLE IF NOT EXISTS market_titles (
-      ticker    TEXT PRIMARY KEY,
-      title     TEXT NOT NULL,
-      category  TEXT,
-      yes_sub   TEXT,
-      no_sub    TEXT
+      ticker     TEXT PRIMARY KEY,
+      title      TEXT NOT NULL,
+      category   TEXT,
+      yes_sub    TEXT,
+      no_sub     TEXT,
+      close_time TEXT
     );
   `);
   // Migrations
-  try { db.exec('ALTER TABLE market_titles ADD COLUMN category TEXT'); } catch { /* already exists */ }
-  try { db.exec('ALTER TABLE market_titles ADD COLUMN yes_sub TEXT');  } catch { /* already exists */ }
-  try { db.exec('ALTER TABLE market_titles ADD COLUMN no_sub TEXT');   } catch { /* already exists */ }
+  try { db.exec('ALTER TABLE market_titles ADD COLUMN category   TEXT'); } catch { /* already exists */ }
+  try { db.exec('ALTER TABLE market_titles ADD COLUMN yes_sub    TEXT'); } catch { /* already exists */ }
+  try { db.exec('ALTER TABLE market_titles ADD COLUMN no_sub     TEXT'); } catch { /* already exists */ }
+  try { db.exec('ALTER TABLE market_titles ADD COLUMN close_time TEXT'); } catch { /* already exists */ }
+  try { db.exec('ALTER TABLE trades ADD COLUMN trade_id TEXT');          } catch { /* already exists */ }
   return db;
 }
 
 const insertStmt = () => db.prepare(`
-  INSERT OR IGNORE INTO trades (id, ticker, category, side, yes_price, no_price, count, ts, ts_ms)
-  VALUES (@id, @ticker, @category, @side, @yes_price, @no_price, @count, @ts, @ts_ms)
+  INSERT OR IGNORE INTO trades (id, trade_id, ticker, category, side, yes_price, no_price, count, ts, ts_ms)
+  VALUES (@id, @trade_id, @ticker, @category, @side, @yes_price, @no_price, @count, @ts, @ts_ms)
 `);
 
 let _insert;
@@ -48,6 +51,7 @@ export function insertTrade(trade) {
   if (!_insert) _insert = insertStmt();
   _insert.run({
     id:        trade.id,
+    trade_id:  trade.tradeId ?? null,
     ticker:    trade.ticker,
     category:  trade.category,
     side:      trade.side,
@@ -64,6 +68,7 @@ export function bulkInsert(trades) {
   const run = db.transaction((rows) => { for (const r of rows) _insert.run(r); });
   run(trades.map(t => ({
     id:        t.id,
+    trade_id:  t.tradeId ?? null,
     ticker:    t.ticker,
     category:  t.category,
     side:      t.side,
@@ -81,12 +86,12 @@ export function getTradesSince(sinceMs, limit = 10_000, minNotional = 0, sortBy 
     ? `CASE t.side WHEN 'yes' THEN t.count * COALESCE(t.yes_price, 0) ELSE t.count * COALESCE(t.no_price, 0) END DESC`
     : `t.ts_ms DESC`;
   return db.prepare(`
-    SELECT t.id, t.ticker,
+    SELECT t.id, t.trade_id AS tradeId, t.ticker,
            COALESCE(m.category, t.category) AS category,
            t.side,
            t.yes_price AS yesPrice, t.no_price AS noPrice,
            t.count, t.ts,
-           m.title, m.yes_sub AS yesSub, m.no_sub AS noSub
+           m.title, m.yes_sub AS yesSub, m.no_sub AS noSub, m.close_time AS closeTime
     FROM trades t
     LEFT JOIN market_titles m ON m.ticker = t.ticker
     WHERE t.ts_ms >= ?
@@ -145,27 +150,36 @@ export function getNewestTradeTs() {
 
 export function bulkInsertTitles(rows) {
   const stmt = db.prepare(`
-    INSERT INTO market_titles (ticker, title, category, yes_sub, no_sub) VALUES (?, ?, ?, ?, ?)
+    INSERT INTO market_titles (ticker, title, category, yes_sub, no_sub, close_time) VALUES (?, ?, ?, ?, ?, ?)
     ON CONFLICT(ticker) DO UPDATE SET
-      title    = CASE WHEN excluded.title    != '' THEN excluded.title    ELSE market_titles.title    END,
-      category = COALESCE(excluded.category, market_titles.category),
-      yes_sub  = COALESCE(excluded.yes_sub,  market_titles.yes_sub),
-      no_sub   = COALESCE(excluded.no_sub,   market_titles.no_sub)
+      title      = CASE WHEN excluded.title != '' THEN excluded.title ELSE market_titles.title END,
+      category   = COALESCE(excluded.category,   market_titles.category),
+      yes_sub    = COALESCE(excluded.yes_sub,    market_titles.yes_sub),
+      no_sub     = COALESCE(excluded.no_sub,     market_titles.no_sub),
+      close_time = COALESCE(excluded.close_time, market_titles.close_time)
   `);
   const run = db.transaction((r) => {
-    for (const [ticker, title, category = null, yes_sub = null, no_sub = null] of r)
-      stmt.run(ticker, title, category, yes_sub, no_sub);
+    for (const [ticker, title, category = null, yes_sub = null, no_sub = null, close_time = null] of r)
+      stmt.run(ticker, title, category, yes_sub, no_sub, close_time);
   });
   run(rows);
 }
 
 export function getTickerCategoryMap() {
-  const rows = db.prepare('SELECT ticker, category FROM market_titles WHERE category IS NOT NULL').all();
+  const rows = db.prepare(`
+    SELECT m.ticker, m.category FROM market_titles m
+    WHERE m.category IS NOT NULL
+      AND m.ticker IN (SELECT DISTINCT ticker FROM trades)
+  `).all();
   return new Map(rows.map((r) => [r.ticker, r.category]));
 }
 
 export function getTickerTitleMap() {
-  const rows = db.prepare('SELECT ticker, title FROM market_titles WHERE title IS NOT NULL').all();
+  const rows = db.prepare(`
+    SELECT m.ticker, m.title FROM market_titles m
+    WHERE m.title IS NOT NULL
+      AND m.ticker IN (SELECT DISTINCT ticker FROM trades)
+  `).all();
   return new Map(rows.map((r) => [r.ticker, r.title]));
 }
 
@@ -175,6 +189,10 @@ export function getTitleCount() {
 
 export function getCategorizedTitleCount() {
   return db.prepare('SELECT COUNT(*) AS n FROM market_titles WHERE category IS NOT NULL').get().n;
+}
+
+export function getCloseTimeCount() {
+  return db.prepare('SELECT COUNT(*) AS n FROM market_titles WHERE close_time IS NOT NULL').get().n;
 }
 
 export function getMissingTitleTickers() {

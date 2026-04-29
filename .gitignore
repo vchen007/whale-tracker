@@ -11,3 +11,5 @@ trades.db-wal
 .DS_Store
 .Rhistory
 .claude/
+logs/
+*.pptx.png

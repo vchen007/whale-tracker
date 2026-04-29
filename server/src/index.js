@@ -6,8 +6,9 @@ import Fastify from 'fastify';
 import fastifyWebsocket from '@fastify/websocket';
 import { loadPrivateKey } from './auth.js';
 import { KalshiClient } from './kalshiClient.js';
-import { initDb, insertTrade, bulkInsert, getTradesSince, getTopMarkets, getOldestTradeTs, getNewestTradeTs, bulkInsertTitles, getTitleCount, getCategorizedTitleCount, getTickerCategoryMap, getTickerTitleMap, getUniqueSeries, updateCategoriesBySeries, getMissingTitleTickers, getTickersMissingCategory, bulkUpdateCategories, purgeSmallTrades } from './db.js';
-import { fetchTradeHistory, fetchAllMarketTitles, fetchCategories, fetchEventData } from './kalshiRest.js';
+import { AutoTrader } from './autoTrader.js';
+import { initDb, insertTrade, bulkInsert, getTradesSince, getTopMarkets, getOldestTradeTs, getNewestTradeTs, bulkInsertTitles, getTitleCount, getCategorizedTitleCount, getCloseTimeCount, getTickerCategoryMap, getTickerTitleMap, getUniqueSeries, updateCategoriesBySeries, getMissingTitleTickers, getTickersMissingCategory, bulkUpdateCategories, purgeSmallTrades } from './db.js';
+import { fetchTradeHistory, fetchAllMarketTitles, fetchCategories, fetchEventData, fetchEventCategoryMap } from './kalshiRest.js';
 
 // ── Config ────────────────────────────────────────────────────────────────────
 
@@ -67,6 +68,16 @@ const thirtyDaysAgo = Date.now() - THIRTY_DAYS_MS;
   }
 })();
 
+// ── Auto-trader ───────────────────────────────────────────────────────────────
+
+const autoTrader = new AutoTrader({
+  privateKey,
+  apiKeyId:  API_KEY_ID,
+  enabled:   process.env.AUTO_TRADER_ENABLED !== 'false',
+  category:  process.env.AUTO_TRADER_CATEGORY ?? 'Sports',
+  count:     Number(process.env.AUTO_TRADER_COUNT ?? 1),
+});
+
 // ── Category map (ticker → human-readable category) ──────────────────────────
 
 const categoryMap = getTickerCategoryMap();
@@ -83,6 +94,7 @@ function addTrade(trade) {
   if (!isWhale(trade)) return;
   insertTrade(trade);
   broadcast({ type: 'trade', data: trade });
+  autoTrader.onTrade(trade).catch((err) => console.error('[auto-trader] unhandled error', err.message));
 }
 
 function setStatus(status) {
@@ -141,6 +153,15 @@ app.get('/markets/top', async (req) => {
   return getTopMarkets(sinceMs, limit);
 });
 
+// ── Auto-trader endpoints ─────────────────────────────────────────────────────
+
+app.get('/auto-trader/status', async () => autoTrader.status());
+
+app.post('/auto-trader/enable',  async () => { autoTrader.enable();  return autoTrader.status(); });
+app.post('/auto-trader/disable', async () => { autoTrader.disable(); return autoTrader.status(); });
+
+// ── Categories ────────────────────────────────────────────────────────────────
+
 app.get('/categories', async (_req, reply) => {
   try {
     return await fetchCategories();
@@ -162,12 +183,24 @@ const kalshi = new KalshiClient({
 
 kalshi.connect();
 
-// Seed market titles in background if not yet cached
-if (getTitleCount() === 0) {
-  console.log('[titles] fetching market titles in background…');
-  fetchAllMarketTitles(privateKey, API_KEY_ID, (page) => bulkInsertTitles(page))
-    .then((n) => console.log(`[titles] cached ${n} market titles`))
-    .catch((err) => console.error('[titles] error:', err.message));
+// Seed market titles in background if not yet cached, or if close_time is missing
+if (getTitleCount() === 0 || getCategorizedTitleCount() === 0 || getCloseTimeCount() === 0) {
+  console.log('[titles] fetching market titles + close times in background…');
+  (async () => {
+    try {
+      const eventCategoryMap = await fetchEventCategoryMap(privateKey, API_KEY_ID);
+      console.log(`[events] loaded ${eventCategoryMap.size} event categories`);
+      const n = await fetchAllMarketTitles(privateKey, API_KEY_ID, (page) => {
+        bulkInsertTitles(page);
+        for (const [ticker, , category] of page) {
+          if (category) categoryMap.set(ticker, category);
+        }
+      }, eventCategoryMap);
+      console.log(`[titles] cached ${n} market titles with close times`);
+    } catch (err) {
+      console.error('[titles] error:', err.message);
+    }
+  })();
 }
 
 // Backfill titles + categories together via event endpoint

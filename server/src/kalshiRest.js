@@ -29,6 +29,7 @@ function normaliseRestTrade(t) {
   const count    = Math.round(parseFloat(t.count_fp ?? '0'));
   return {
     id:       t.trade_id,
+    tradeId:  t.trade_id,
     ticker,
     category: categoryFromTicker(ticker),
     side,
@@ -106,7 +107,14 @@ export async function fetchAllMarketTitles(privateKey, apiKeyId, onPage, eventCa
 
     const pairs = (data.markets ?? [])
       .filter((m) => m.ticker && m.title)
-      .map((m) => [m.ticker, m.title, eventCategoryMap.get(m.event_ticker) ?? null]);
+      .map((m) => [
+        m.ticker,
+        m.title,
+        eventCategoryMap.get(m.event_ticker) ?? null,
+        m.yes_sub_title ?? null,
+        m.no_sub_title  ?? null,
+        m.close_time    ?? null,
+      ]);
 
     if (pairs.length === 0) break;
     onPage(pairs);

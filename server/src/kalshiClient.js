@@ -20,8 +20,10 @@ export function categoryFromTicker(ticker = '') {
 function normaliseTrade(raw, categoryMap, titleMap) {
   const m = raw.msg ?? raw;
   const ticker = m.market_ticker ?? m.ticker ?? '';
+  const tradeId = m.trade_id ?? null;
   return {
-    id: `${m.trade_id ?? m.ts ?? Date.now()}-${Math.random().toString(36).slice(2, 6)}`,
+    id: tradeId ?? `${m.ts ?? Date.now()}-${Math.random().toString(36).slice(2, 6)}`,
+    tradeId,
     ticker,
     category: categoryMap?.get(ticker) ?? categoryFromTicker(ticker),
     title: titleMap?.get(ticker) ?? null,

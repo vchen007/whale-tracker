@@ -58,6 +58,13 @@ const TradeRow = memo(function TradeRow({ trade }) {
         {trade.title ?? '—'}
       </td>
       <td className="td td--cat">{trade.category}</td>
+      <td className="td td--timing">
+        {trade.closeTime
+          ? new Date(trade.ts) < new Date(trade.closeTime)
+            ? <span className="badge badge--pre">PRE</span>
+            : <span className="badge badge--live">LIVE</span>
+          : <span className="badge badge--unknown">—</span>}
+      </td>
       <td className={`td td--side side--${trade.side}`}>
         {trade.side.toUpperCase()}
       </td>
@@ -68,6 +75,7 @@ const TradeRow = memo(function TradeRow({ trade }) {
         {isWhale && !isMegaWhale && ' 🐋'}
       </td>
       <td className="td td--notional">{notional}</td>
+      <td className="td td--mono td--tradeid" title={trade.tradeId ?? ''}>{trade.tradeId ?? '—'}</td>
     </tr>
   );
 });

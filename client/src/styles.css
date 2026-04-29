@@ -259,7 +259,20 @@ html, body { height: 100%; background: var(--bg); color: var(--text); font-famil
   color: var(--dim);
   white-space: nowrap;
   user-select: none;
+  overflow: hidden;
 }
+
+.th-resize-handle {
+  position: absolute;
+  right: 0;
+  top: 0;
+  bottom: 0;
+  width: 5px;
+  cursor: col-resize;
+  z-index: 1;
+}
+.th-resize-handle:hover,
+.th-resize-handle:active { background: var(--cyan); opacity: 0.6; }
 
 .th:first-child,
 .th:nth-child(2),
@@ -300,6 +313,13 @@ html, body { height: 100%; background: var(--bg); color: var(--text); font-famil
 .td--size    { font-family: var(--font-mono); font-weight: 600; }
 .td--size-whale { color: var(--gold); }
 .td--notional { font-family: var(--font-mono); color: var(--bright); }
+.td--timing   { text-align: center; }
+
+.badge          { display: inline-block; padding: 1px 6px; border-radius: 3px; font-size: 0.65rem; font-weight: 700; letter-spacing: 0.05em; }
+.badge--pre     { background: rgba(99,179,237,0.15); color: #63b3ed; border: 1px solid rgba(99,179,237,0.3); }
+.badge--live    { background: rgba(72,187,120,0.15); color: #48bb78; border: 1px solid rgba(72,187,120,0.3); }
+.badge--unknown { opacity: 0.35; }
+.td--tradeid { font-size: 0.7rem; opacity: 0.6; overflow: hidden; text-overflow: ellipsis; }
 
 .side--yes { color: var(--green); }
 .side--no  { color: var(--red); }
