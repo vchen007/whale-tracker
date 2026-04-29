@@ -236,7 +236,14 @@ export async function fetchTitlesByTickers(privateKey, apiKeyId, tickers, onPage
       const data = await res.json();
       const m = data.market ?? data;
       if (m?.ticker && m?.title) {
-        buffer.push([m.ticker, m.title, m.category ?? null]);
+        buffer.push([
+          m.ticker,
+          m.title,
+          m.category ?? null,
+          m.yes_sub_title ?? null,
+          m.no_sub_title  ?? null,
+          m.close_time    ?? null,
+        ]);
         total++;
       }
     } catch {

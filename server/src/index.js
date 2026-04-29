@@ -8,7 +8,7 @@ import { loadPrivateKey } from './auth.js';
 import { KalshiClient } from './kalshiClient.js';
 import { AutoTrader } from './autoTrader.js';
 import { initDb, insertTrade, bulkInsert, getTradesSince, getTopMarkets, getOldestTradeTs, getNewestTradeTs, bulkInsertTitles, getTitleCount, getCategorizedTitleCount, getCloseTimeCount, getTickerCategoryMap, getTickerTitleMap, getUniqueSeries, updateCategoriesBySeries, getMissingTitleTickers, getTickersMissingCategory, bulkUpdateCategories, purgeSmallTrades } from './db.js';
-import { fetchTradeHistory, fetchAllMarketTitles, fetchCategories, fetchEventData, fetchEventCategoryMap } from './kalshiRest.js';
+import { fetchTradeHistory, fetchAllMarketTitles, fetchCategories, fetchEventData, fetchEventCategoryMap, fetchTitlesByTickers } from './kalshiRest.js';
 
 // ── Config ────────────────────────────────────────────────────────────────────
 
@@ -183,6 +183,39 @@ const kalshi = new KalshiClient({
 
 kalshi.connect();
 
+// Periodic gap-fill: every 10 minutes, REST-fill any trades the WebSocket may have missed
+setInterval(async () => {
+  const newest = getNewestTradeTs();
+  if (!newest || (Date.now() - newest) < 60_000) return;
+  try {
+    const total = await fetchTradeHistory(privateKey, API_KEY_ID, newest + 1, (page) => {
+      bulkInsert(page.filter(isWhale));
+    });
+    if (total > 0) console.log(`[gap-fill] filled ${total} trades`);
+  } catch (err) {
+    console.error('[gap-fill] error:', err.message);
+  }
+}, 10 * 60 * 1000);
+
+// Periodic title backfill: every 5 minutes, fetch titles for any tickers that arrived since startup.
+// Uses direct /markets/{ticker} endpoint which always has the title (event endpoint may not).
+setInterval(async () => {
+  const missing = getMissingTitleTickers();
+  if (missing.length === 0) return;
+  console.log(`[titles] backfilling ${missing.length} new tickers…`);
+  try {
+    await fetchTitlesByTickers(privateKey, API_KEY_ID, missing, (page) => {
+      bulkInsertTitles(page);
+      for (const [ticker, title, category] of page) {
+        if (title)    titleMap.set(ticker, title);
+        if (category) categoryMap.set(ticker, category);
+      }
+    });
+  } catch (err) {
+    console.error('[titles] periodic backfill error:', err.message);
+  }
+}, 5 * 60 * 1000);
+
 // Seed market titles in background if not yet cached, or if close_time is missing
 if (getTitleCount() === 0 || getCategorizedTitleCount() === 0 || getCloseTimeCount() === 0) {
   console.log('[titles] fetching market titles + close times in background…');
@@ -203,19 +236,19 @@ if (getTitleCount() === 0 || getCategorizedTitleCount() === 0 || getCloseTimeCou
   })();
 }
 
-// Backfill titles + categories together via event endpoint
+// Backfill titles for any tickers missing them via direct /markets/{ticker} endpoint
 const missingTickers = getMissingTitleTickers();
 if (missingTickers.length > 0) {
-  console.log(`[event] backfilling ${missingTickers.length} tickers via event endpoint…`);
-  fetchEventData(privateKey, API_KEY_ID, missingTickers, (page) => {
+  console.log(`[titles] backfilling ${missingTickers.length} tickers via markets endpoint…`);
+  fetchTitlesByTickers(privateKey, API_KEY_ID, missingTickers, (page) => {
     bulkInsertTitles(page);
     for (const [ticker, title, category] of page) {
       if (title)    titleMap.set(ticker, title);
       if (category) categoryMap.set(ticker, category);
     }
   })
-    .then((n) => console.log(`[event] backfilled ${n} tickers`))
-    .catch((err) => console.error('[event] backfill error:', err.message));
+    .then((n) => console.log(`[titles] backfilled ${n} tickers`))
+    .catch((err) => console.error('[titles] backfill error:', err.message));
 }
 
 // ── Start ─────────────────────────────────────────────────────────────────────

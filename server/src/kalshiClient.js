@@ -21,6 +21,18 @@ function normaliseTrade(raw, categoryMap, titleMap) {
   const m = raw.msg ?? raw;
   const ticker = m.market_ticker ?? m.ticker ?? '';
   const tradeId = m.trade_id ?? null;
+
+  // Kalshi migrated from integer cent prices (yes_price) + integer count
+  // to dollar string prices (yes_price_dollars) + float string count (count_fp).
+  // Handle both formats so old and new messages both work.
+  const count = parseFloat(m.count_fp ?? m.count ?? 0);
+  const yesPrice = m.yes_price_dollars != null
+    ? Math.round(parseFloat(m.yes_price_dollars) * 100)
+    : (m.yes_price ?? null);
+  const noPrice = m.no_price_dollars != null
+    ? Math.round(parseFloat(m.no_price_dollars) * 100)
+    : (m.no_price ?? null);
+
   return {
     id: tradeId ?? `${m.ts ?? Date.now()}-${Math.random().toString(36).slice(2, 6)}`,
     tradeId,
@@ -28,9 +40,9 @@ function normaliseTrade(raw, categoryMap, titleMap) {
     category: categoryMap?.get(ticker) ?? categoryFromTicker(ticker),
     title: titleMap?.get(ticker) ?? null,
     side: (m.taker_side ?? '').toLowerCase(),   // 'yes' | 'no'
-    yesPrice: m.yes_price ?? null,              // cents  0-100
-    noPrice: m.no_price ?? null,
-    count: m.count ?? 0,                        // number of contracts
+    yesPrice,
+    noPrice,
+    count,
     ts: m.ts ? new Date(m.ts).toISOString() : new Date().toISOString(),
   };
 }
