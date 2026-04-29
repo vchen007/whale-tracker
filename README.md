@@ -58,8 +58,8 @@ cp .env.example .env
 Edit `.env`:
 
 ```
-KALSHI_API_KEY_ID=59be071e-cb9d-49f9-aabf-08f3b9f09b2b
-KALSHI_PRIVATE_KEY_PATH=/Users/claude_bot/arb-scanner/Claude_bot.txt/kalshi_private_key.pem
+KALSHI_API_KEY_ID="KALSHI_API_KEY_ID"
+KALSHI_PRIVATE_KEY_PATH="FILE_PATH_TO_PRIVATE_KEY"
 ```
 
 Put your PEM private key at the path you specified (e.g. `./kalshi_private_key.pem`).
