@@ -4,6 +4,31 @@ import { notifyTrade } from './notify.js';
 const REST_BASE  = 'https://api.elections.kalshi.com/trade-api/v2';
 const ORDER_PATH = '/trade-api/v2/portfolio/orders';
 
+// ── Kalshi fee schedule ──────────────────────────────────────────────────────
+// Standard taker fee: 0.07 × P × (1−P) dollars per contract (P in dollars 0–1)
+// Sports premium (NBA, NHL, NFL since Jul 2025): +15% on the standard fee
+// Source: https://kalshi.com/fee-schedule
+function kalshiFeeDollars(priceCents, count, isSports = false) {
+  const P = priceCents / 100;
+  const baseFee = 0.07 * P * (1 - P);
+  const feePerContract = isSports ? baseFee * 1.15 : baseFee;
+  // Round UP to nearest cent (worst-case for the trader, conservative for our filter)
+  return Math.ceil(feePerContract * count * 100) / 100;
+}
+
+/**
+ * Profitability check: returns the max-win net profit in dollars.
+ * Buy 1 contract at P (cents); if outcome hits, payout = $1.00.
+ *   gross_profit_if_win = (100 − P) / 100 × count
+ *   fee = kalshiFeeDollars(P, count, isSports)
+ *   net_profit_if_win = gross_profit_if_win − fee
+ */
+function maxNetProfitDollars(priceCents, count, isSports = false) {
+  const grossProfit = ((100 - priceCents) / 100) * count;
+  const fee = kalshiFeeDollars(priceCents, count, isSports);
+  return grossProfit - fee;
+}
+
 function authHeaders(privateKey, apiKeyId, path, method = 'POST') {
   const ts  = Date.now().toString();
   const sig = sign('sha256', Buffer.from(ts + method + path, 'utf8'), {
@@ -24,18 +49,20 @@ export class AutoTrader {
    * @param {object} opts
    * @param {import('crypto').KeyObject} opts.privateKey
    * @param {string}  opts.apiKeyId
-   * @param {boolean} [opts.enabled]      default true
-   * @param {string}  [opts.category]     category to copy-trade (default 'Sports')
-   * @param {number}  [opts.count]        contracts per copy-trade (default 1)
-   * @param {number}  [opts.minNotional]  min trade notional in dollars to copy (default 20000)
+   * @param {boolean} [opts.enabled]            default true
+   * @param {string}  [opts.category]           category to copy-trade (default 'Sports')
+   * @param {number}  [opts.count]              contracts per copy-trade (default 1)
+   * @param {number}  [opts.minNotional]        min trade notional in dollars to copy (default 20000)
+   * @param {number}  [opts.minNetProfit]       min net profit if win, in dollars (default 0.02 = 2¢)
    */
-  constructor({ privateKey, apiKeyId, enabled = true, category = 'Sports', count = 1, minNotional = 20_000 }) {
-    this.privateKey  = privateKey;
-    this.apiKeyId    = apiKeyId;
-    this.enabled     = enabled;
-    this.category    = category;
-    this.count       = count;
-    this.minNotional = minNotional;
+  constructor({ privateKey, apiKeyId, enabled = true, category = 'Sports', count = 1, minNotional = 20_000, minNetProfit = 0.02 }) {
+    this.privateKey   = privateKey;
+    this.apiKeyId     = apiKeyId;
+    this.enabled      = enabled;
+    this.category     = category;
+    this.count        = count;
+    this.minNotional  = minNotional;
+    this.minNetProfit = minNetProfit;
 
     // Simple in-memory log of recent orders (capped at 500)
     this.log = [];
@@ -48,10 +75,11 @@ export class AutoTrader {
 
   status() {
     return {
-      enabled:     this.enabled,
-      category:    this.category,
-      count:       this.count,
-      minNotional: this.minNotional,
+      enabled:      this.enabled,
+      category:     this.category,
+      count:        this.count,
+      minNotional:  this.minNotional,
+      minNetProfit: this.minNetProfit,
       recentOrders: this.log.slice(-20),
     };
   }
@@ -63,15 +91,33 @@ export class AutoTrader {
   async onTrade(trade) {
     if (!this.enabled) return;
     if (trade.category !== this.category) return;
+
     const price = trade.side === 'yes' ? (trade.yesPrice ?? 0) : (trade.noPrice ?? 0);
+    if (!price) return;
+
+    // Notional gate
     const notional = (trade.count * price) / 100;
     if (notional < this.minNotional) return;
-    await this._placeOrder(trade);
+
+    // Profitability gate: buying at price P, max payout per contract = $1.00.
+    // Sports markets get the +15% fee premium since Jul 2025.
+    const isSports  = trade.category === 'Sports';
+    const fee       = kalshiFeeDollars(price, this.count, isSports);
+    const netProfit = maxNetProfitDollars(price, this.count, isSports);
+    if (netProfit < this.minNetProfit) {
+      console.log(
+        `[auto-trader] skip ${trade.ticker} ${trade.side.toUpperCase()} @ ${price}¢ — ` +
+        `max net win = $${netProfit.toFixed(4)} (fee $${fee.toFixed(4)}) < $${this.minNetProfit.toFixed(2)} threshold`
+      );
+      return;
+    }
+
+    await this._placeOrder(trade, { fee, netProfit });
   }
 
   // ── Internal ────────────────────────────────────────────────────────────────
 
-  async _placeOrder(trade) {
+  async _placeOrder(trade, { fee = 0, netProfit = 0 } = {}) {
     const side  = trade.side; // 'yes' | 'no'
     const price = side === 'yes' ? trade.yesPrice : trade.noPrice;
 
@@ -93,14 +139,16 @@ export class AutoTrader {
     };
 
     const entry = {
-      ts:            new Date().toISOString(),
-      ticker:        trade.ticker,
+      ts:                  new Date().toISOString(),
+      ticker:              trade.ticker,
       side,
       price,
-      count:         this.count,
+      count:               this.count,
+      estFee:              fee,
+      estMaxNetProfit:     netProfit,
       clientOrderId,
-      status:        'pending',
-      error:         null,
+      status:              'pending',
+      error:               null,
     };
 
     try {

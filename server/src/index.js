@@ -72,11 +72,12 @@ const thirtyDaysAgo = Date.now() - THIRTY_DAYS_MS;
 
 const autoTrader = new AutoTrader({
   privateKey,
-  apiKeyId:    API_KEY_ID,
-  enabled:     process.env.AUTO_TRADER_ENABLED !== 'false',
-  category:    process.env.AUTO_TRADER_CATEGORY ?? 'Sports',
-  count:       Number(process.env.AUTO_TRADER_COUNT ?? 1),
-  minNotional: Number(process.env.AUTO_TRADER_MIN_NOTIONAL ?? 20_000),
+  apiKeyId:     API_KEY_ID,
+  enabled:      process.env.AUTO_TRADER_ENABLED !== 'false',
+  category:     process.env.AUTO_TRADER_CATEGORY ?? 'Sports',
+  count:        Number(process.env.AUTO_TRADER_COUNT ?? 1),
+  minNotional:  Number(process.env.AUTO_TRADER_MIN_NOTIONAL ?? 20_000),
+  minNetProfit: Number(process.env.AUTO_TRADER_MIN_NET_PROFIT ?? 0.02),
 });
 
 // ── Category map (ticker → human-readable category) ──────────────────────────
