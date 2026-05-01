@@ -24,16 +24,18 @@ export class AutoTrader {
    * @param {object} opts
    * @param {import('crypto').KeyObject} opts.privateKey
    * @param {string}  opts.apiKeyId
-   * @param {boolean} [opts.enabled]   default true
-   * @param {string}  [opts.category]  category to copy-trade (default 'Sports')
-   * @param {number}  [opts.count]     contracts per copy-trade (default 1)
+   * @param {boolean} [opts.enabled]      default true
+   * @param {string}  [opts.category]     category to copy-trade (default 'Sports')
+   * @param {number}  [opts.count]        contracts per copy-trade (default 1)
+   * @param {number}  [opts.minNotional]  min trade notional in dollars to copy (default 20000)
    */
-  constructor({ privateKey, apiKeyId, enabled = true, category = 'Sports', count = 1 }) {
-    this.privateKey = privateKey;
-    this.apiKeyId   = apiKeyId;
-    this.enabled    = enabled;
-    this.category   = category;
-    this.count      = count;
+  constructor({ privateKey, apiKeyId, enabled = true, category = 'Sports', count = 1, minNotional = 20_000 }) {
+    this.privateKey  = privateKey;
+    this.apiKeyId    = apiKeyId;
+    this.enabled     = enabled;
+    this.category    = category;
+    this.count       = count;
+    this.minNotional = minNotional;
 
     // Simple in-memory log of recent orders (capped at 500)
     this.log = [];
@@ -46,9 +48,10 @@ export class AutoTrader {
 
   status() {
     return {
-      enabled:  this.enabled,
-      category: this.category,
-      count:    this.count,
+      enabled:     this.enabled,
+      category:    this.category,
+      count:       this.count,
+      minNotional: this.minNotional,
       recentOrders: this.log.slice(-20),
     };
   }
@@ -60,6 +63,9 @@ export class AutoTrader {
   async onTrade(trade) {
     if (!this.enabled) return;
     if (trade.category !== this.category) return;
+    const price = trade.side === 'yes' ? (trade.yesPrice ?? 0) : (trade.noPrice ?? 0);
+    const notional = (trade.count * price) / 100;
+    if (notional < this.minNotional) return;
     await this._placeOrder(trade);
   }
 
