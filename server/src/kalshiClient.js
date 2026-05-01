@@ -33,8 +33,15 @@ function normaliseTrade(raw, categoryMap, titleMap) {
     ? Math.round(parseFloat(m.no_price_dollars) * 100)
     : (m.no_price ?? null);
 
+  // Kalshi sends `ts` as a Unix-seconds integer (10 digits) on the WebSocket.
+  // Some REST shapes use `created_time` as an ISO string. Handle both —
+  // and if we get a number, detect whether it's seconds (<1e12) or ms.
+  let tsValue = m.ts ?? m.created_time;
+  if (typeof tsValue === 'number' && tsValue < 1e12) tsValue = tsValue * 1000;
+  const ts = tsValue ? new Date(tsValue).toISOString() : new Date().toISOString();
+
   return {
-    id: tradeId ?? `${m.ts ?? Date.now()}-${Math.random().toString(36).slice(2, 6)}`,
+    id: tradeId ?? `${tsValue ?? Date.now()}-${Math.random().toString(36).slice(2, 6)}`,
     tradeId,
     ticker,
     category: categoryMap?.get(ticker) ?? categoryFromTicker(ticker),
@@ -43,7 +50,7 @@ function normaliseTrade(raw, categoryMap, titleMap) {
     yesPrice,
     noPrice,
     count,
-    ts: m.ts ? new Date(m.ts).toISOString() : new Date().toISOString(),
+    ts,
   };
 }
 
