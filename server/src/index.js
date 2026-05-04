@@ -7,7 +7,7 @@ import fastifyWebsocket from '@fastify/websocket';
 import { loadPrivateKey } from './auth.js';
 import { KalshiClient } from './kalshiClient.js';
 import { AutoTrader } from './autoTrader.js';
-import { initDb, insertTrade, bulkInsert, getTradesSince, getTopMarkets, getOldestTradeTs, getNewestTradeTs, bulkInsertTitles, getTitleCount, getCategorizedTitleCount, getCloseTimeCount, getTickerCategoryMap, getTickerTitleMap, getUniqueSeries, updateCategoriesBySeries, getMissingTitleTickers, getTickersMissingCategory, bulkUpdateCategories, purgeSmallTrades } from './db.js';
+import { initDb, insertTrade, bulkInsert, getTradesSince, getTopMarkets, getOldestTradeTs, getNewestTradeTs, bulkInsertTitles, getTitleCount, getCategorizedTitleCount, getCloseTimeCount, getTickerCategoryMap, getTickerTitleMap, getUniqueSeries, updateCategoriesBySeries, getMissingTitleTickers, getTickersMissingCategory, bulkUpdateCategories, purgeSmallTrades, getAutoOrderSummary } from './db.js';
 import { fetchTradeHistory, fetchAllMarketTitles, fetchCategories, fetchEventData, fetchEventCategoryMap, fetchTitlesByTickers } from './kalshiRest.js';
 
 // ── Config ────────────────────────────────────────────────────────────────────
@@ -162,6 +162,12 @@ app.get('/auto-trader/status', async () => autoTrader.status());
 app.post('/auto-trader/enable',  async () => { autoTrader.enable();  return autoTrader.status(); });
 app.post('/auto-trader/disable', async () => { autoTrader.disable(); return autoTrader.status(); });
 
+// P&L summary: total wins/losses/realized cents + recent orders with outcomes
+app.get('/auto-trader/pnl', async () => getAutoOrderSummary());
+
+// Trigger settlement check on demand
+app.post('/auto-trader/settle', async () => autoTrader.checkSettlements());
+
 // ── Categories ────────────────────────────────────────────────────────────────
 
 app.get('/categories', async (_req, reply) => {
@@ -198,6 +204,17 @@ setInterval(async () => {
     console.error('[gap-fill] error:', err.message);
   }
 }, 10 * 60 * 1000);
+
+// Periodic settlement check: every 15 minutes, look up open auto-trader orders
+// against Kalshi market status. When a market settles, record outcome + P&L.
+setInterval(async () => {
+  try {
+    const { checked, settled } = await autoTrader.checkSettlements();
+    if (settled > 0) console.log(`[auto-trader] settlement check: ${settled}/${checked} orders settled`);
+  } catch (err) {
+    console.error('[auto-trader] settlement check error:', err.message);
+  }
+}, 15 * 60 * 1000);
 
 // Periodic title backfill: every 5 minutes, fetch titles for any tickers that arrived since startup.
 // Uses direct /markets/{ticker} endpoint which always has the title (event endpoint may not).

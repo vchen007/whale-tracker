@@ -1,5 +1,6 @@
 import { sign, constants } from 'crypto';
 import { notifyTrade } from './notify.js';
+import { insertAutoOrder, getOpenAutoOrders, settleAutoOrder } from './db.js';
 
 const REST_BASE  = 'https://api.elections.kalshi.com/trade-api/v2';
 const ORDER_PATH = '/trade-api/v2/portfolio/orders';
@@ -180,6 +181,70 @@ export class AutoTrader {
     this.log.push(entry);
     if (this.log.length > 500) this.log.shift();
 
+    // Persist to DB if successfully placed (so we can track outcome later)
+    if (entry.status === 'placed') {
+      try {
+        insertAutoOrder({
+          client_order_id: entry.clientOrderId,
+          order_id:        entry.orderId ?? null,
+          ticker:          entry.ticker,
+          side:            entry.side,
+          entry_price:     entry.price,
+          count:           entry.count,
+          est_fee:         entry.estFee ?? null,
+          placed_ts:       entry.ts,
+          status:          'placed',
+        });
+      } catch (err) {
+        console.error('[auto-trader] db insert error', err.message);
+      }
+    }
+
     notifyTrade(entry).catch((err) => console.error('[notify] unhandled error', err.message));
+  }
+
+  /**
+   * Poll Kalshi for any open orders that have settled, and record outcomes.
+   * Should be called periodically (e.g., every 15 minutes).
+   */
+  async checkSettlements() {
+    const open = getOpenAutoOrders();
+    if (open.length === 0) return { checked: 0, settled: 0 };
+
+    let settledCount = 0;
+    for (const o of open) {
+      try {
+        const res = await fetch(`${REST_BASE}/markets/${o.ticker}`);
+        if (!res.ok) continue;
+        const data = await res.json();
+        const m = data.market ?? {};
+        const status = m.status;
+        if (status !== 'settled' && status !== 'finalized') continue;
+
+        // m.result is 'yes' or 'no' depending on which side won
+        const result = m.result;
+        if (!result) continue;
+
+        // P&L per contract: win → (100 − entry), lose → −entry
+        const won = (o.side === result);
+        const pnlPerContract = won ? (100 - o.entry_price) : -o.entry_price;
+        const pnlCents = pnlPerContract * o.count;
+
+        settleAutoOrder(o.client_order_id, {
+          outcome:   won ? 'win' : 'loss',
+          pnlCents,
+          settledTs: new Date().toISOString(),
+        });
+
+        settledCount++;
+        console.log(
+          `[auto-trader] ${won ? '✅' : '❌'} settled ${o.ticker} ${o.side.toUpperCase()} @ ${o.entry_price}¢ — ` +
+          `${won ? 'WIN' : 'LOSS'} ${pnlCents >= 0 ? '+' : ''}${pnlCents}¢`
+        );
+      } catch (err) {
+        console.error(`[auto-trader] settlement check error ${o.ticker}:`, err.message);
+      }
+    }
+    return { checked: open.length, settled: settledCount };
   }
 }

@@ -38,7 +38,66 @@ export function initDb() {
   try { db.exec('ALTER TABLE market_titles ADD COLUMN no_sub     TEXT'); } catch { /* already exists */ }
   try { db.exec('ALTER TABLE market_titles ADD COLUMN close_time TEXT'); } catch { /* already exists */ }
   try { db.exec('ALTER TABLE trades ADD COLUMN trade_id TEXT');          } catch { /* already exists */ }
+
+  // Auto-trader order tracking
+  db.exec(`
+    CREATE TABLE IF NOT EXISTS auto_orders (
+      client_order_id TEXT PRIMARY KEY,
+      order_id        TEXT,
+      ticker          TEXT NOT NULL,
+      side            TEXT NOT NULL,
+      entry_price     INTEGER NOT NULL,
+      count           INTEGER NOT NULL,
+      est_fee         REAL,
+      placed_ts       TEXT NOT NULL,
+      status          TEXT NOT NULL,
+      outcome         TEXT,
+      pnl_cents       INTEGER,
+      settled_ts      TEXT
+    );
+    CREATE INDEX IF NOT EXISTS idx_auto_orders_status ON auto_orders (status);
+  `);
   return db;
+}
+
+// ── Auto-trader order helpers ────────────────────────────────────────────────
+
+export function insertAutoOrder(o) {
+  return db.prepare(`
+    INSERT OR REPLACE INTO auto_orders
+      (client_order_id, order_id, ticker, side, entry_price, count, est_fee, placed_ts, status)
+    VALUES (@client_order_id, @order_id, @ticker, @side, @entry_price, @count, @est_fee, @placed_ts, @status)
+  `).run(o);
+}
+
+export function getOpenAutoOrders() {
+  return db.prepare(`
+    SELECT * FROM auto_orders WHERE status = 'placed' ORDER BY placed_ts DESC
+  `).all();
+}
+
+export function settleAutoOrder(clientOrderId, { outcome, pnlCents, settledTs }) {
+  return db.prepare(`
+    UPDATE auto_orders
+    SET status = 'settled', outcome = ?, pnl_cents = ?, settled_ts = ?
+    WHERE client_order_id = ?
+  `).run(outcome, pnlCents, settledTs, clientOrderId);
+}
+
+export function getAutoOrderSummary() {
+  const totals = db.prepare(`
+    SELECT
+      COUNT(*) AS total,
+      SUM(CASE WHEN status = 'placed'  THEN 1 ELSE 0 END) AS open,
+      SUM(CASE WHEN outcome = 'win'    THEN 1 ELSE 0 END) AS wins,
+      SUM(CASE WHEN outcome = 'loss'   THEN 1 ELSE 0 END) AS losses,
+      COALESCE(SUM(pnl_cents), 0) AS realized_pnl_cents
+    FROM auto_orders
+  `).get();
+  const recent = db.prepare(`
+    SELECT * FROM auto_orders ORDER BY placed_ts DESC LIMIT 50
+  `).all();
+  return { ...totals, recent };
 }
 
 const insertStmt = () => db.prepare(`
