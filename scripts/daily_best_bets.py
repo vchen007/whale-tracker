@@ -14,6 +14,7 @@ Usage:
 """
 import json
 import os
+import time
 import warnings
 from collections import defaultdict
 from datetime import datetime, timedelta, timezone
@@ -80,16 +81,23 @@ def fetch_and_analyze():
     since = (datetime.now(timezone.utc) - timedelta(hours=24)).isoformat()
 
     trades, cursor = [], None
-    for _ in range(60):
+    for i in range(60):
         params = {"limit": "1000", "min_created_time": since}
         if cursor: params["cursor"] = cursor
         r = requests.get(f"{BASE}/markets/trades", params=params, timeout=30)
+        if r.status_code == 429:
+            time.sleep(5)  # backoff if rate-limited
+            continue
+        if r.status_code != 200:
+            break
         data = r.json()
         batch = data.get("trades", [])
         if not batch: break
         trades.extend(batch)
         cursor = data.get("cursor")
         if not cursor: break
+        if i > 0 and i % 5 == 0:
+            time.sleep(0.3)  # gentle pacing every 5 pages
     print(f"Fetched {len(trades)} trades from Kalshi")
 
     # Top N largest single trades
@@ -218,6 +226,18 @@ def fetch_and_analyze():
 # ── 2. Build + send email ────────────────────────────────────────────────────
 
 def build_html(r):
+    # Column widths — forced layout so the right-aligned $ + % always lines up
+    # across rows regardless of how long the title or pick text is.
+    # Layout: # | Title | Pick | Amount(%)
+    COL_RANK = '<col style="width:30px">'
+    COL_TITLE = '<col>'                       # flexes
+    COL_PICK = '<col style="width:170px">'
+    COL_AMT = '<col style="width:130px">'
+    COLS_4 = f'<colgroup>{COL_RANK}{COL_TITLE}{COL_PICK}{COL_AMT}</colgroup>'
+    COLS_3 = f'<colgroup>{COL_TITLE}{COL_PICK}{COL_AMT}</colgroup>'
+    TBL_STYLE = "width:100%;border-collapse:collapse;table-layout:fixed"
+    CELL_TRUNC = "overflow:hidden;text-overflow:ellipsis;white-space:nowrap"
+
     # Top 5 conviction plays
     tldr_rows = ""
     for i, b in enumerate(r["top_bets"][:TOP_TLDR_LIMIT], 1):
@@ -226,10 +246,12 @@ def build_html(r):
         color = side_color(b["winner_side"])
         emoji = side_emoji(b["winner_side"])
         tldr_rows += (
-            f'<tr><td style="padding:6px 12px 6px 0">#{i}</td>'
-            f'<td style="padding:6px 12px 6px 0"><b>{b["title"][:60]}</b></td>'
-            f'<td style="padding:6px 12px 6px 0;color:{color}"><b>{emoji} {b["winner_side"]}: {pick}</b></td>'
-            f'<td style="padding:6px 0;text-align:right;font-family:monospace">{fmt(b["combined"])} · {b["confidence"]:.0f}%</td></tr>'
+            f'<tr>'
+            f'<td style="padding:6px 8px 6px 0;color:#666">#{i}</td>'
+            f'<td style="padding:6px 12px 6px 0;{CELL_TRUNC}"><b>{b["title"]}</b></td>'
+            f'<td style="padding:6px 12px 6px 0;color:{color};{CELL_TRUNC}"><b>{emoji} {b["winner_side"]}: {pick}</b></td>'
+            f'<td style="padding:6px 8px 6px 0;text-align:right;font-family:monospace;white-space:nowrap">{fmt(b["combined"])} · {b["confidence"]:.0f}%</td>'
+            f'</tr>'
         )
 
     # Top 5 largest single bets
@@ -240,12 +262,13 @@ def build_html(r):
         side_upper = t["side"].upper()
         color = side_color(side_upper)
         emoji = side_emoji(side_upper)
-        title = t["title"][:55] + ("…" if len(t["title"]) > 55 else "")
         largest_rows += (
-            f'<tr><td style="padding:6px 12px 6px 0;color:#666;font-size:12px">#{i}</td>'
-            f'<td style="padding:6px 12px 6px 0;font-size:13px"><b>{title}</b></td>'
-            f'<td style="padding:6px 12px 6px 0;color:{color};font-weight:600;font-size:13px">{emoji} {side_upper}: {pick} @ {int(round(t["price"]*100))}¢</td>'
-            f'<td style="padding:6px 0;text-align:right;font-family:monospace;font-size:13px"><b>{fmt(t["notional"])}</b></td></tr>'
+            f'<tr>'
+            f'<td style="padding:6px 8px 6px 0;color:#666;font-size:12px">#{i}</td>'
+            f'<td style="padding:6px 12px 6px 0;font-size:13px;{CELL_TRUNC}"><b>{t["title"]}</b></td>'
+            f'<td style="padding:6px 12px 6px 0;color:{color};font-weight:600;font-size:13px;{CELL_TRUNC}">{emoji} {side_upper}: {pick} @ {int(round(t["price"]*100))}¢</td>'
+            f'<td style="padding:6px 8px 6px 0;text-align:right;font-family:monospace;font-size:13px;white-space:nowrap"><b>{fmt(t["notional"])}</b></td>'
+            f'</tr>'
         )
 
     # Per-category sections
@@ -258,15 +281,16 @@ def build_html(r):
             pick = pick or b["winner_side"]
             color = side_color(b["winner_side"])
             emoji = side_emoji(b["winner_side"])
-            title = b["title"][:55] + ("…" if len(b["title"]) > 55 else "")
             rows += (
-                f'<tr><td style="padding:5px 12px 5px 0;font-size:13px">{title}</td>'
-                f'<td style="padding:5px 12px 5px 0;color:{color};font-weight:600">{emoji} {b["winner_side"]}: {pick}</td>'
-                f'<td style="padding:5px 0;text-align:right;font-family:monospace;font-size:13px">{fmt(b["combined"])} · {b["confidence"]:.0f}%</td></tr>'
+                f'<tr>'
+                f'<td style="padding:5px 12px 5px 0;font-size:13px;{CELL_TRUNC}">{b["title"]}</td>'
+                f'<td style="padding:5px 12px 5px 0;color:{color};font-weight:600;font-size:13px;{CELL_TRUNC}">{emoji} {b["winner_side"]}: {pick}</td>'
+                f'<td style="padding:5px 8px 5px 0;text-align:right;font-family:monospace;font-size:13px;white-space:nowrap">{fmt(b["combined"])} · {b["confidence"]:.0f}%</td>'
+                f'</tr>'
             )
         cat_html += (
             f'<h3 style="margin:20px 0 6px 0;color:#0a0a0a">{cat_emoji} {cat}</h3>'
-            f'<table style="width:100%;border-collapse:collapse">{rows}</table>'
+            f'<table style="{TBL_STYLE}">{COLS_3}{rows}</table>'
         )
 
     # Volume / threshold banner — shown when activity is below the standard
@@ -289,7 +313,7 @@ def build_html(r):
     # Tables only render if there are rows to show
     tldr_section = (
         '<h3 style="margin-top:20px;color:#0a0a0a">🔥 Top 5 Conviction Plays</h3>'
-        f'<table style="width:100%;border-collapse:collapse;background:#f9f9f9;padding:8px">{tldr_rows}</table>'
+        f'<table style="{TBL_STYLE};background:#f9f9f9;padding:8px">{COLS_4}{tldr_rows}</table>'
     ) if tldr_rows else (
         '<h3 style="margin-top:20px;color:#0a0a0a">🔥 Top 5 Conviction Plays</h3>'
         '<p style="color:#888;font-size:13px;font-style:italic;background:#f9f9f9;padding:14px;margin:0">'
@@ -297,7 +321,7 @@ def build_html(r):
     )
     largest_section = (
         '<h3 style="margin-top:20px;color:#0a0a0a">💰 Top 5 Largest Single Bets</h3>'
-        f'<table style="width:100%;border-collapse:collapse;background:#fff8e1;padding:8px">{largest_rows}</table>'
+        f'<table style="{TBL_STYLE};background:#fff8e1;padding:8px">{COLS_4}{largest_rows}</table>'
     ) if largest_rows else ""
 
     return f"""<div style="font-family:-apple-system,sans-serif;max-width:640px;color:#1a1a1a;padding:8px">
