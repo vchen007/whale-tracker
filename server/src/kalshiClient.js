@@ -17,10 +17,11 @@ export function categoryFromTicker(ticker = '') {
  * @param {object} raw
  * @param {Map<string,string>} [categoryMap]  ticker → human category
  */
-function normaliseTrade(raw, categoryMap, titleMap) {
+function normaliseTrade(raw, categoryMap, titleMap, marketMetaMap) {
   const m = raw.msg ?? raw;
   const ticker = m.market_ticker ?? m.ticker ?? '';
   const tradeId = m.trade_id ?? null;
+  const meta = marketMetaMap?.get(ticker) ?? {};
 
   // Kalshi migrated from integer cent prices (yes_price) + integer count
   // to dollar string prices (yes_price_dollars) + float string count (count_fp).
@@ -46,6 +47,8 @@ function normaliseTrade(raw, categoryMap, titleMap) {
     ticker,
     category: categoryMap?.get(ticker) ?? categoryFromTicker(ticker),
     title: titleMap?.get(ticker) ?? null,
+    closeTime:      meta.closeTime      ?? null,
+    eventStartTime: meta.eventStartTime ?? null,
     side: (m.taker_side ?? '').toLowerCase(),   // 'yes' | 'no'
     yesPrice,
     noPrice,
@@ -62,13 +65,14 @@ export class KalshiClient {
    * @param {(trade: object) => void} opts.onTrade   callback for each trade
    * @param {(status: string) => void} opts.onStatus  callback for status strings
    */
-  constructor({ apiKeyId, privateKey, onTrade, onStatus, categoryMap, titleMap }) {
+  constructor({ apiKeyId, privateKey, onTrade, onStatus, categoryMap, titleMap, marketMetaMap }) {
     this.apiKeyId = apiKeyId;
     this.privateKey = privateKey;
     this.onTrade = onTrade;
     this.onStatus = onStatus ?? (() => {});
     this.categoryMap = categoryMap ?? new Map();
     this.titleMap = titleMap ?? new Map();
+    this.marketMetaMap = marketMetaMap ?? new Map();
 
     this._ws = null;
     this._msgId = 1;
@@ -126,7 +130,7 @@ export class KalshiClient {
       // Trade event
       if (msg.type === 'trade') {
         try {
-          this.onTrade(normaliseTrade(msg, this.categoryMap, this.titleMap));
+          this.onTrade(normaliseTrade(msg, this.categoryMap, this.titleMap, this.marketMetaMap));
         } catch (err) {
           console.error('[kalshi] normalise error', err.message, msg);
         }

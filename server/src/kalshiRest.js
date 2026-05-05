@@ -114,6 +114,7 @@ export async function fetchAllMarketTitles(privateKey, apiKeyId, onPage, eventCa
         m.yes_sub_title ?? null,
         m.no_sub_title  ?? null,
         m.close_time    ?? null,
+        m.occurrence_datetime ?? null,
       ]);
 
     if (pairs.length === 0) break;
@@ -177,9 +178,11 @@ export async function fetchEventData(privateKey, apiKeyId, marketTickers, onPage
       const marketInfo = new Map();
       for (const m of data.event?.markets ?? []) {
         if (m.ticker) marketInfo.set(m.ticker, {
-          title:   m.title          ?? null,
-          yesSub:  m.yes_sub_title  ?? null,
-          noSub:   m.no_sub_title   ?? null,
+          title:      m.title               ?? null,
+          yesSub:     m.yes_sub_title       ?? null,
+          noSub:      m.no_sub_title        ?? null,
+          closeTime:  m.close_time          ?? null,
+          eventStart: m.occurrence_datetime ?? null,
         });
       }
 
@@ -187,7 +190,7 @@ export async function fetchEventData(privateKey, apiKeyId, marketTickers, onPage
       for (const mTicker of eventToMarkets.get(evTicker)) {
         const info = marketInfo.get(mTicker) ?? {};
         if (info.title || category) {
-          buffer.push([mTicker, info.title ?? '', category, info.yesSub, info.noSub]);
+          buffer.push([mTicker, info.title ?? '', category, info.yesSub, info.noSub, info.closeTime, info.eventStart]);
           total++;
         }
       }
@@ -243,6 +246,7 @@ export async function fetchTitlesByTickers(privateKey, apiKeyId, tickers, onPage
           m.yes_sub_title ?? null,
           m.no_sub_title  ?? null,
           m.close_time    ?? null,
+          m.occurrence_datetime ?? null,
         ]);
         total++;
       }

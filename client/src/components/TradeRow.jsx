@@ -59,11 +59,25 @@ const TradeRow = memo(function TradeRow({ trade }) {
       </td>
       <td className="td td--cat">{trade.category}</td>
       <td className="td td--timing">
-        {trade.closeTime
-          ? new Date(trade.ts) < new Date(trade.closeTime)
-            ? <span className="badge badge--pre">PRE</span>
-            : <span className="badge badge--live">LIVE</span>
-          : <span className="badge badge--unknown">—</span>}
+        {(() => {
+          const t = new Date(trade.ts).getTime();
+          const eventStart = trade.eventStartTime ? new Date(trade.eventStartTime).getTime() : null;
+          const close      = trade.closeTime      ? new Date(trade.closeTime).getTime()      : null;
+
+          // Best signal: event start time. Trade before kickoff = PRE, after = LIVE.
+          if (eventStart) {
+            return t < eventStart
+              ? <span className="badge badge--pre">PRE</span>
+              : <span className="badge badge--live">LIVE</span>;
+          }
+          // Fallback: close_time heuristic (less accurate but works for older markets)
+          if (close) {
+            return t < close
+              ? <span className="badge badge--pre">PRE</span>
+              : <span className="badge badge--live">LIVE</span>;
+          }
+          return <span className="badge badge--unknown">—</span>;
+        })()}
       </td>
       <td className={`td td--side side--${trade.side}`}>
         {trade.side.toUpperCase()}

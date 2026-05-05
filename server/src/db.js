@@ -37,6 +37,7 @@ export function initDb() {
   try { db.exec('ALTER TABLE market_titles ADD COLUMN yes_sub    TEXT'); } catch { /* already exists */ }
   try { db.exec('ALTER TABLE market_titles ADD COLUMN no_sub     TEXT'); } catch { /* already exists */ }
   try { db.exec('ALTER TABLE market_titles ADD COLUMN close_time TEXT'); } catch { /* already exists */ }
+  try { db.exec('ALTER TABLE market_titles ADD COLUMN event_start_time TEXT'); } catch { /* already exists */ }
   try { db.exec('ALTER TABLE trades ADD COLUMN trade_id TEXT');          } catch { /* already exists */ }
 
   // Auto-trader order tracking
@@ -150,7 +151,9 @@ export function getTradesSince(sinceMs, limit = 10_000, minNotional = 0, sortBy 
            t.side,
            t.yes_price AS yesPrice, t.no_price AS noPrice,
            t.count, t.ts,
-           m.title, m.yes_sub AS yesSub, m.no_sub AS noSub, m.close_time AS closeTime
+           m.title, m.yes_sub AS yesSub, m.no_sub AS noSub,
+           m.close_time AS closeTime,
+           m.event_start_time AS eventStartTime
     FROM trades t
     LEFT JOIN market_titles m ON m.ticker = t.ticker
     WHERE t.ts_ms >= ?
@@ -209,17 +212,19 @@ export function getNewestTradeTs() {
 
 export function bulkInsertTitles(rows) {
   const stmt = db.prepare(`
-    INSERT INTO market_titles (ticker, title, category, yes_sub, no_sub, close_time) VALUES (?, ?, ?, ?, ?, ?)
+    INSERT INTO market_titles (ticker, title, category, yes_sub, no_sub, close_time, event_start_time)
+    VALUES (?, ?, ?, ?, ?, ?, ?)
     ON CONFLICT(ticker) DO UPDATE SET
-      title      = CASE WHEN excluded.title != '' THEN excluded.title ELSE market_titles.title END,
-      category   = COALESCE(excluded.category,   market_titles.category),
-      yes_sub    = COALESCE(excluded.yes_sub,    market_titles.yes_sub),
-      no_sub     = COALESCE(excluded.no_sub,     market_titles.no_sub),
-      close_time = COALESCE(excluded.close_time, market_titles.close_time)
+      title            = CASE WHEN excluded.title != '' THEN excluded.title ELSE market_titles.title END,
+      category         = COALESCE(excluded.category,         market_titles.category),
+      yes_sub          = COALESCE(excluded.yes_sub,          market_titles.yes_sub),
+      no_sub           = COALESCE(excluded.no_sub,           market_titles.no_sub),
+      close_time       = COALESCE(excluded.close_time,       market_titles.close_time),
+      event_start_time = COALESCE(excluded.event_start_time, market_titles.event_start_time)
   `);
   const run = db.transaction((r) => {
-    for (const [ticker, title, category = null, yes_sub = null, no_sub = null, close_time = null] of r)
-      stmt.run(ticker, title, category, yes_sub, no_sub, close_time);
+    for (const [ticker, title, category = null, yes_sub = null, no_sub = null, close_time = null, event_start_time = null] of r)
+      stmt.run(ticker, title, category, yes_sub, no_sub, close_time, event_start_time);
   });
   run(rows);
 }
@@ -231,6 +236,17 @@ export function getTickerCategoryMap() {
       AND m.ticker IN (SELECT DISTINCT ticker FROM trades)
   `).all();
   return new Map(rows.map((r) => [r.ticker, r.category]));
+}
+
+export function getTickerMetaMap() {
+  // Returns Map<ticker, { closeTime, eventStartTime }> for tickers with active trades
+  const rows = db.prepare(`
+    SELECT m.ticker, m.close_time AS closeTime, m.event_start_time AS eventStartTime
+    FROM market_titles m
+    WHERE (m.close_time IS NOT NULL OR m.event_start_time IS NOT NULL)
+      AND m.ticker IN (SELECT DISTINCT ticker FROM trades)
+  `).all();
+  return new Map(rows.map((r) => [r.ticker, { closeTime: r.closeTime, eventStartTime: r.eventStartTime }]));
 }
 
 export function getTickerTitleMap() {

@@ -7,7 +7,7 @@ import fastifyWebsocket from '@fastify/websocket';
 import { loadPrivateKey } from './auth.js';
 import { KalshiClient } from './kalshiClient.js';
 import { AutoTrader } from './autoTrader.js';
-import { initDb, insertTrade, bulkInsert, getTradesSince, getTopMarkets, getOldestTradeTs, getNewestTradeTs, bulkInsertTitles, getTitleCount, getCategorizedTitleCount, getCloseTimeCount, getTickerCategoryMap, getTickerTitleMap, getUniqueSeries, updateCategoriesBySeries, getMissingTitleTickers, getTickersMissingCategory, bulkUpdateCategories, purgeSmallTrades, getAutoOrderSummary } from './db.js';
+import { initDb, insertTrade, bulkInsert, getTradesSince, getTopMarkets, getOldestTradeTs, getNewestTradeTs, bulkInsertTitles, getTitleCount, getCategorizedTitleCount, getCloseTimeCount, getTickerCategoryMap, getTickerTitleMap, getTickerMetaMap, getUniqueSeries, updateCategoriesBySeries, getMissingTitleTickers, getTickersMissingCategory, bulkUpdateCategories, purgeSmallTrades, getAutoOrderSummary } from './db.js';
 import { fetchTradeHistory, fetchAllMarketTitles, fetchCategories, fetchEventData, fetchEventCategoryMap, fetchTitlesByTickers } from './kalshiRest.js';
 
 // ── Config ────────────────────────────────────────────────────────────────────
@@ -82,8 +82,9 @@ const autoTrader = new AutoTrader({
 
 // ── Category map (ticker → human-readable category) ──────────────────────────
 
-const categoryMap = getTickerCategoryMap();
-const titleMap    = getTickerTitleMap();
+const categoryMap   = getTickerCategoryMap();
+const titleMap      = getTickerTitleMap();
+const marketMetaMap = getTickerMetaMap();
 
 // ── State ────────────────────────────────────────────────────────────────────
 
@@ -187,6 +188,7 @@ const kalshi = new KalshiClient({
   onStatus: setStatus,
   categoryMap,
   titleMap,
+  marketMetaMap,
 });
 
 kalshi.connect();
@@ -225,9 +227,12 @@ setInterval(async () => {
   try {
     await fetchTitlesByTickers(privateKey, API_KEY_ID, missing, (page) => {
       bulkInsertTitles(page);
-      for (const [ticker, title, category] of page) {
+      for (const [ticker, title, category, _yesSub, _noSub, closeTime, eventStartTime] of page) {
         if (title)    titleMap.set(ticker, title);
         if (category) categoryMap.set(ticker, category);
+        if (closeTime || eventStartTime) {
+          marketMetaMap.set(ticker, { closeTime, eventStartTime });
+        }
       }
     });
   } catch (err) {
