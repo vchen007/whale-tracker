@@ -26,11 +26,17 @@ warnings.filterwarnings("ignore")
 
 BASE = "https://api.elections.kalshi.com/trade-api/v2"
 MIN_TRADE_NOTIONAL = 100      # per-trade floor
-MIN_PAIR_NOTIONAL  = 50_000   # combined $ across both sides of a market
 MIN_CONFIDENCE     = 70       # min winning-side % to count as a "best bet"
 TOP_BETS_LIMIT     = 25
 TOP_LARGEST_LIMIT  = 5
 TOP_TLDR_LIMIT     = 5
+
+# Adaptive pair-notional thresholds — try in descending order and stop at the
+# first level that yields ≥ MIN_BETS_TARGET qualifying markets. Ensures the
+# email always has actionable content even on quiet days (e.g. Tuesdays
+# between sports rounds, holidays, etc).
+PAIR_THRESHOLD_TIERS = [50_000, 20_000, 10_000, 5_000, 2_000, 500]
+MIN_BETS_TARGET      = 5
 
 RESEND_API_KEY = os.environ.get("RESEND_API_KEY")
 NOTIFY_EMAIL   = os.environ.get("NOTIFY_EMAIL", "claude_bot23@proton.me")
@@ -123,11 +129,10 @@ def fetch_and_analyze():
         event = "-".join(ticker.rsplit("-")[:-1]) or ticker
         pairs[event].append((ticker, info))
 
-    # Compute best bets per pair
-    best_bets = []
+    # Compute candidate bets per pair (no min-notional filter yet)
+    candidates = []
     for event, sides in pairs.items():
         total = sum(s[1]["yes"] + s[1]["no"] for s in sides)
-        if total < MIN_PAIR_NOTIONAL: continue
         best_side, best_conf = None, 0
         for ticker, info in sides:
             side_total = info["yes"] + info["no"]
@@ -138,15 +143,31 @@ def fetch_and_analyze():
             if conf > best_conf:
                 best_conf, best_side = conf, (ticker, winner_side, conf, side_total)
         if best_conf < MIN_CONFIDENCE: continue
+        if not best_side: continue
         ticker, winner_side, conf, side_total = best_side
-        best_bets.append({
+        candidates.append({
             "event": event, "ticker": ticker, "winner_side": winner_side,
             "confidence": conf, "combined": total, "side_notional": side_total,
             "last_price": markets[ticker]["last_price"],
         })
 
-    best_bets.sort(key=lambda b: b["combined"], reverse=True)
+    candidates.sort(key=lambda b: b["combined"], reverse=True)
+
+    # Adaptive threshold: pick the highest tier yielding ≥ MIN_BETS_TARGET bets
+    chosen_threshold = PAIR_THRESHOLD_TIERS[-1]
+    best_bets = []
+    for tier in PAIR_THRESHOLD_TIERS:
+        bets_at_tier = [b for b in candidates if b["combined"] >= tier]
+        if len(bets_at_tier) >= MIN_BETS_TARGET:
+            chosen_threshold = tier
+            best_bets = bets_at_tier
+            break
+    else:
+        # No tier met the target — show all candidates anyway
+        best_bets = candidates
+
     top = best_bets[:TOP_BETS_LIMIT]
+    print(f"Adaptive threshold = ${chosen_threshold:,} → {len(top)} bets")
 
     # Fetch titles + categories for top bets
     for b in top:
@@ -186,9 +207,11 @@ def fetch_and_analyze():
         "date": datetime.now(timezone.utc).strftime("%b %d, %Y"),
         "total_whale_trades": sum(m["trades"] for m in markets.values()),
         "total_volume": sum(m["yes"] + m["no"] for m in markets.values()),
+        "total_raw_trades": len(trades),
         "top_bets": top,
         "top_largest": top_largest,
         "by_category": dict(by_cat),
+        "threshold_used": chosen_threshold,
     }
 
 
@@ -246,21 +269,50 @@ def build_html(r):
             f'<table style="width:100%;border-collapse:collapse">{rows}</table>'
         )
 
+    # Volume / threshold banner — shown when activity is below the standard
+    # bar so the user knows why the email is sparse (vs assuming bug).
+    threshold = r.get("threshold_used", 50_000)
+    is_quiet = threshold < 50_000 or len(r["top_bets"]) == 0
+    quiet_banner = ""
+    if is_quiet:
+        if len(r["top_bets"]) == 0:
+            msg = "🌙 No qualifying whale signals today — light trading volume across the board."
+        else:
+            msg = f"🌙 Light trading day — relaxed threshold to {fmt(threshold)} to surface signals (normal: $50K)."
+        quiet_banner = (
+            '<div style="background:#fff3cd;border-left:4px solid #ffa726;padding:10px 14px;'
+            'margin:14px 0 4px 0;font-size:13px;color:#7a5b00;border-radius:4px">'
+            f'{msg}'
+            '</div>'
+        )
+
+    # Tables only render if there are rows to show
+    tldr_section = (
+        '<h3 style="margin-top:20px;color:#0a0a0a">🔥 Top 5 Conviction Plays</h3>'
+        f'<table style="width:100%;border-collapse:collapse;background:#f9f9f9;padding:8px">{tldr_rows}</table>'
+    ) if tldr_rows else (
+        '<h3 style="margin-top:20px;color:#0a0a0a">🔥 Top 5 Conviction Plays</h3>'
+        '<p style="color:#888;font-size:13px;font-style:italic;background:#f9f9f9;padding:14px;margin:0">'
+        'No markets met the conviction filter today.</p>'
+    )
+    largest_section = (
+        '<h3 style="margin-top:20px;color:#0a0a0a">💰 Top 5 Largest Single Bets</h3>'
+        f'<table style="width:100%;border-collapse:collapse;background:#fff8e1;padding:8px">{largest_rows}</table>'
+    ) if largest_rows else ""
+
     return f"""<div style="font-family:-apple-system,sans-serif;max-width:640px;color:#1a1a1a;padding:8px">
   <h2 style="color:#0a0a0a;border-bottom:2px solid #16a34a;padding-bottom:8px">🐳 Daily Best Bets — {r['date']}</h2>
   <p style="color:#666;font-size:13px">{r['total_whale_trades']:,} whale trades · {fmt(r['total_volume'])} total volume in last 24h</p>
 
-  <h3 style="margin-top:20px;color:#0a0a0a">🔥 Top 5 Conviction Plays</h3>
-  <table style="width:100%;border-collapse:collapse;background:#f9f9f9;padding:8px">{tldr_rows}</table>
-
-  <h3 style="margin-top:20px;color:#0a0a0a">💰 Top 5 Largest Single Bets</h3>
-  <table style="width:100%;border-collapse:collapse;background:#fff8e1;padding:8px">{largest_rows}</table>
+  {quiet_banner}
+  {tldr_section}
+  {largest_section}
 
   {cat_html}
 
   <div style="margin-top:24px;padding-top:12px;border-top:1px solid #e5e7eb;color:#999;font-size:11px;line-height:1.5">
     <div><b>Legend:</b> <span style="color:#16a34a;font-weight:600">🟢 YES</span> = whale buying YES (outcome will happen) · <span style="color:#dc2626;font-weight:600">🔴 NO</span> = whale buying NO (outcome will NOT happen)</div>
-    <div style="margin-top:6px">Conviction = combined $ across both sides of a market with ≥{MIN_CONFIDENCE}% lean. Largest = single biggest whale trades by notional. Source: Kalshi public trades API.</div>
+    <div style="margin-top:6px">Conviction = combined $ across both sides of a market with ≥{MIN_CONFIDENCE}% lean. Threshold used today: {fmt(threshold)} (adapts on quiet days). Largest = single biggest whale trades by notional. Source: Kalshi public trades API.</div>
   </div>
 </div>"""
 
