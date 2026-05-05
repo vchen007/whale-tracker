@@ -7,7 +7,7 @@ import fastifyWebsocket from '@fastify/websocket';
 import { loadPrivateKey } from './auth.js';
 import { KalshiClient } from './kalshiClient.js';
 import { AutoTrader } from './autoTrader.js';
-import { initDb, insertTrade, bulkInsert, getTradesSince, getTopMarkets, getOldestTradeTs, getNewestTradeTs, bulkInsertTitles, getTitleCount, getCategorizedTitleCount, getCloseTimeCount, getTickerCategoryMap, getTickerTitleMap, getTickerMetaMap, getUniqueSeries, updateCategoriesBySeries, getMissingTitleTickers, getTickersMissingCategory, bulkUpdateCategories, purgeSmallTrades, getAutoOrderSummary } from './db.js';
+import { initDb, insertTrade, bulkInsert, getTradesSince, getTopMarkets, getOldestTradeTs, getNewestTradeTs, bulkInsertTitles, getTitleCount, getCategorizedTitleCount, getCloseTimeCount, getTickerCategoryMap, getTickerTitleMap, getTickerMetaMap, getRecentlyActiveTickers, refreshMarketMeta, getUniqueSeries, updateCategoriesBySeries, getMissingTitleTickers, getTickersMissingCategory, bulkUpdateCategories, purgeSmallTrades, getAutoOrderSummary } from './db.js';
 import { fetchTradeHistory, fetchAllMarketTitles, fetchCategories, fetchEventData, fetchEventCategoryMap, fetchTitlesByTickers } from './kalshiRest.js';
 
 // ── Config ────────────────────────────────────────────────────────────────────
@@ -206,6 +206,36 @@ setInterval(async () => {
     console.error('[gap-fill] error:', err.message);
   }
 }, 10 * 60 * 1000);
+
+// Periodic market metadata refresher: every 20 minutes, refresh close_time +
+// event_start_time for tickers traded in the last 48 hours. Kalshi updates
+// these fields when markets actually close (often earlier than scheduled),
+// so a stale cache shows wrong PRE/LIVE timing badges on the dashboard.
+setInterval(async () => {
+  const tickers = getRecentlyActiveTickers(48);
+  if (tickers.length === 0) return;
+  let updated = 0;
+  for (const ticker of tickers) {
+    try {
+      const res = await fetch(`https://api.elections.kalshi.com/trade-api/v2/markets/${ticker}`);
+      if (!res.ok) continue;
+      const m = (await res.json()).market;
+      if (!m) continue;
+      refreshMarketMeta(ticker, m.close_time ?? null, m.occurrence_datetime ?? null);
+      if (m.close_time || m.occurrence_datetime) {
+        marketMetaMap.set(ticker, {
+          closeTime: m.close_time ?? null,
+          eventStartTime: m.occurrence_datetime ?? null,
+        });
+        updated++;
+      }
+    } catch {
+      // skip
+    }
+    await new Promise((r) => setTimeout(r, 30)); // rate limit
+  }
+  if (updated > 0) console.log(`[meta] refreshed ${updated}/${tickers.length} active tickers`);
+}, 20 * 60 * 1000);
 
 // Periodic settlement check: every 15 minutes, look up open auto-trader orders
 // against Kalshi market status. When a market settles, record outcome + P&L.

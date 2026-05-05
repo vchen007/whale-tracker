@@ -249,6 +249,24 @@ export function getTickerMetaMap() {
   return new Map(rows.map((r) => [r.ticker, { closeTime: r.closeTime, eventStartTime: r.eventStartTime }]));
 }
 
+// Tickers traded recently — used by the metadata refresher to keep
+// close_time / event_start_time current as Kalshi updates them.
+export function getRecentlyActiveTickers(hoursBack = 48) {
+  return db.prepare(`
+    SELECT DISTINCT ticker FROM trades
+    WHERE ts_ms >= strftime('%s','now','-${Math.floor(hoursBack)} hours') * 1000
+  `).all().map((r) => r.ticker);
+}
+
+export function refreshMarketMeta(ticker, closeTime, eventStartTime) {
+  return db.prepare(`
+    UPDATE market_titles
+    SET close_time = COALESCE(?, close_time),
+        event_start_time = COALESCE(?, event_start_time)
+    WHERE ticker = ?
+  `).run(closeTime, eventStartTime, ticker);
+}
+
 export function getTickerTitleMap() {
   const rows = db.prepare(`
     SELECT m.ticker, m.title FROM market_titles m

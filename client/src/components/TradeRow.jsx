@@ -60,23 +60,21 @@ const TradeRow = memo(function TradeRow({ trade }) {
       <td className="td td--cat">{trade.category}</td>
       <td className="td td--timing">
         {(() => {
+          // Heuristic: Kalshi's close_time on live-bet markets settles right
+          // after the event ends. Most games are <4h, so trades within 4h of
+          // close are LIVE (during event); trades earlier are PRE (before event).
+          // For pre-only markets, close_time = event start, so all valid trades
+          // are within 4h of close → still correctly "in trading window".
+          const LIVE_WINDOW_HOURS = 4;
           const t = new Date(trade.ts).getTime();
-          const eventStart = trade.eventStartTime ? new Date(trade.eventStartTime).getTime() : null;
-          const close      = trade.closeTime      ? new Date(trade.closeTime).getTime()      : null;
+          const close = trade.closeTime ? new Date(trade.closeTime).getTime() : null;
+          if (!close) return <span className="badge badge--unknown">—</span>;
 
-          // Best signal: event start time. Trade before kickoff = PRE, after = LIVE.
-          if (eventStart) {
-            return t < eventStart
-              ? <span className="badge badge--pre">PRE</span>
-              : <span className="badge badge--live">LIVE</span>;
-          }
-          // Fallback: close_time heuristic (less accurate but works for older markets)
-          if (close) {
-            return t < close
-              ? <span className="badge badge--pre">PRE</span>
-              : <span className="badge badge--live">LIVE</span>;
-          }
-          return <span className="badge badge--unknown">—</span>;
+          const hoursToClose = (close - t) / (1000 * 60 * 60);
+          if (hoursToClose < 0) return <span className="badge badge--unknown">—</span>;
+          return hoursToClose < LIVE_WINDOW_HOURS
+            ? <span className="badge badge--live">LIVE</span>
+            : <span className="badge badge--pre">PRE</span>;
         })()}
       </td>
       <td className={`td td--side side--${trade.side}`}>
