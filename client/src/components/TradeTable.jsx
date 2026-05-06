@@ -1,11 +1,12 @@
 import { useState, useRef, useEffect, useCallback } from 'react';
 import TradeRow from './TradeRow.jsx';
 
-const COLS = ['DATE', 'TIME', 'MARKET', 'TITLE', 'CAT', 'TIMING', 'SIDE', 'PRICE', 'SIZE', 'NOTIONAL', 'TRADE ID'];
+const COLS = ['DATE', 'TIME', 'SOURCE', 'MARKET', 'TITLE', 'CAT', 'TIMING', 'SIDE', 'PRICE', 'SIZE', 'NOTIONAL', 'TRADE ID'];
 
 const DEFAULT_WIDTHS = {
   DATE:       112,
   TIME:       128,
+  SOURCE:      80,
   MARKET:     288,
   TITLE:      240,
   CAT:        128,

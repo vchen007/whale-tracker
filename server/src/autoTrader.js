@@ -88,9 +88,13 @@ export class AutoTrader {
   /**
    * Called for every incoming whale trade.
    * Places a copy order if the trade matches our criteria.
+   *
+   * Polymarket trades are tracked but NOT auto-traded — that requires a
+   * Polygon wallet + USDC which we haven't wired up. Source-gate here.
    */
   async onTrade(trade) {
     if (!this.enabled) return;
+    if ((trade.source ?? 'kalshi') !== 'kalshi') return;
     if (trade.category !== this.category) return;
 
     const price = trade.side === 'yes' ? (trade.yesPrice ?? 0) : (trade.noPrice ?? 0);

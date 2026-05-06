@@ -38,7 +38,10 @@ export function initDb() {
   try { db.exec('ALTER TABLE market_titles ADD COLUMN no_sub     TEXT'); } catch { /* already exists */ }
   try { db.exec('ALTER TABLE market_titles ADD COLUMN close_time TEXT'); } catch { /* already exists */ }
   try { db.exec('ALTER TABLE market_titles ADD COLUMN event_start_time TEXT'); } catch { /* already exists */ }
-  try { db.exec('ALTER TABLE trades ADD COLUMN trade_id TEXT');          } catch { /* already exists */ }
+  try { db.exec('ALTER TABLE market_titles ADD COLUMN source TEXT DEFAULT \'kalshi\''); } catch { /* already exists */ }
+  try { db.exec('ALTER TABLE trades ADD COLUMN trade_id TEXT');                    } catch { /* already exists */ }
+  try { db.exec('ALTER TABLE trades ADD COLUMN source   TEXT DEFAULT \'kalshi\''); } catch { /* already exists */ }
+  try { db.exec('ALTER TABLE trades ADD COLUMN outcome  TEXT');                    } catch { /* already exists */ }
 
   // Auto-trader order tracking
   db.exec(`
@@ -102,14 +105,13 @@ export function getAutoOrderSummary() {
 }
 
 const insertStmt = () => db.prepare(`
-  INSERT OR IGNORE INTO trades (id, trade_id, ticker, category, side, yes_price, no_price, count, ts, ts_ms)
-  VALUES (@id, @trade_id, @ticker, @category, @side, @yes_price, @no_price, @count, @ts, @ts_ms)
+  INSERT OR IGNORE INTO trades (id, trade_id, ticker, category, side, yes_price, no_price, count, ts, ts_ms, source, outcome)
+  VALUES (@id, @trade_id, @ticker, @category, @side, @yes_price, @no_price, @count, @ts, @ts_ms, @source, @outcome)
 `);
 
 let _insert;
-export function insertTrade(trade) {
-  if (!_insert) _insert = insertStmt();
-  _insert.run({
+function tradeRow(trade) {
+  return {
     id:        trade.id,
     trade_id:  trade.tradeId ?? null,
     ticker:    trade.ticker,
@@ -120,24 +122,20 @@ export function insertTrade(trade) {
     count:     trade.count,
     ts:        trade.ts,
     ts_ms:     new Date(trade.ts).getTime(),
-  });
+    source:    trade.source ?? 'kalshi',
+    outcome:   trade.outcome ?? null,
+  };
+}
+
+export function insertTrade(trade) {
+  if (!_insert) _insert = insertStmt();
+  _insert.run(tradeRow(trade));
 }
 
 export function bulkInsert(trades) {
   if (!_insert) _insert = insertStmt();
   const run = db.transaction((rows) => { for (const r of rows) _insert.run(r); });
-  run(trades.map(t => ({
-    id:        t.id,
-    trade_id:  t.tradeId ?? null,
-    ticker:    t.ticker,
-    category:  t.category,
-    side:      t.side,
-    yes_price: t.yesPrice ?? null,
-    no_price:  t.noPrice  ?? null,
-    count:     t.count,
-    ts:        t.ts,
-    ts_ms:     new Date(t.ts).getTime(),
-  })));
+  run(trades.map(tradeRow));
 }
 
 export function getTradesSince(sinceMs, limit = 10_000, minNotional = 0, sortBy = 'time') {
@@ -148,10 +146,11 @@ export function getTradesSince(sinceMs, limit = 10_000, minNotional = 0, sortBy 
   return db.prepare(`
     SELECT t.id, t.trade_id AS tradeId, t.ticker,
            COALESCE(m.category, t.category) AS category,
-           t.side,
+           t.side, t.outcome, t.source,
            t.yes_price AS yesPrice, t.no_price AS noPrice,
            t.count, t.ts,
-           m.title, m.yes_sub AS yesSub, m.no_sub AS noSub,
+           COALESCE(m.title, t.ticker) AS title,
+           m.yes_sub AS yesSub, m.no_sub AS noSub,
            m.close_time AS closeTime,
            m.event_start_time AS eventStartTime
     FROM trades t
@@ -210,21 +209,22 @@ export function getNewestTradeTs() {
   return row?.v ?? null;
 }
 
-export function bulkInsertTitles(rows) {
+export function bulkInsertTitles(rows, source = 'kalshi') {
   const stmt = db.prepare(`
-    INSERT INTO market_titles (ticker, title, category, yes_sub, no_sub, close_time, event_start_time)
-    VALUES (?, ?, ?, ?, ?, ?, ?)
+    INSERT INTO market_titles (ticker, title, category, yes_sub, no_sub, close_time, event_start_time, source)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?)
     ON CONFLICT(ticker) DO UPDATE SET
       title            = CASE WHEN excluded.title != '' THEN excluded.title ELSE market_titles.title END,
       category         = COALESCE(excluded.category,         market_titles.category),
       yes_sub          = COALESCE(excluded.yes_sub,          market_titles.yes_sub),
       no_sub           = COALESCE(excluded.no_sub,           market_titles.no_sub),
       close_time       = COALESCE(excluded.close_time,       market_titles.close_time),
-      event_start_time = COALESCE(excluded.event_start_time, market_titles.event_start_time)
+      event_start_time = COALESCE(excluded.event_start_time, market_titles.event_start_time),
+      source           = COALESCE(market_titles.source,      excluded.source)
   `);
   const run = db.transaction((r) => {
     for (const [ticker, title, category = null, yes_sub = null, no_sub = null, close_time = null, event_start_time = null] of r)
-      stmt.run(ticker, title, category, yes_sub, no_sub, close_time, event_start_time);
+      stmt.run(ticker, title, category, yes_sub, no_sub, close_time, event_start_time, source);
   });
   run(rows);
 }

@@ -51,6 +51,11 @@ const TradeRow = memo(function TradeRow({ trade }) {
     >
       <td className="td td--mono">{fmtDate(trade.ts)}</td>
       <td className="td td--mono">{fmtTime(trade.ts)}</td>
+      <td className="td td--source" title={trade.source ?? 'kalshi'}>
+        {(trade.source ?? 'kalshi') === 'polymarket'
+          ? <span className="badge badge--polymarket">POLY</span>
+          : <span className="badge badge--kalshi">KALSHI</span>}
+      </td>
       <td className="td td--ticker" title={trade.ticker}>
         {trade.ticker}
       </td>

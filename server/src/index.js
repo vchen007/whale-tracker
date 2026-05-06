@@ -9,6 +9,7 @@ import { KalshiClient } from './kalshiClient.js';
 import { AutoTrader } from './autoTrader.js';
 import { initDb, insertTrade, bulkInsert, getTradesSince, getTopMarkets, getOldestTradeTs, getNewestTradeTs, bulkInsertTitles, getTitleCount, getCategorizedTitleCount, getCloseTimeCount, getTickerCategoryMap, getTickerTitleMap, getTickerMetaMap, getRecentlyActiveTickers, refreshMarketMeta, getUniqueSeries, updateCategoriesBySeries, getMissingTitleTickers, getTickersMissingCategory, bulkUpdateCategories, purgeSmallTrades, getAutoOrderSummary } from './db.js';
 import { fetchTradeHistory, fetchAllMarketTitles, fetchCategories, fetchEventData, fetchEventCategoryMap, fetchTitlesByTickers } from './kalshiRest.js';
+import { fetchPolymarketTrades } from './polymarketRest.js';
 
 // ── Config ────────────────────────────────────────────────────────────────────
 
@@ -192,6 +193,37 @@ const kalshi = new KalshiClient({
 });
 
 kalshi.connect();
+
+// ── Polymarket ───────────────────────────────────────────────────────────────
+// REST poller — Polymarket's WebSocket needs a Polygon wallet auth flow we
+// haven't set up yet. Polling every 60s is plenty for whale-trade tracking
+// since the data-api includes title + outcome inline (no extra metadata fetch).
+let lastPolymarketPollMs = Date.now() - 24 * 60 * 60 * 1000; // backfill last 24h on first run
+
+async function pollPolymarket() {
+  try {
+    const sinceMs = lastPolymarketPollMs;
+    const trades = await fetchPolymarketTrades(sinceMs);
+    if (trades.length === 0) return;
+
+    // Insert each trade through addTrade so it goes through the same whale
+    // filter, broadcast, and (gated) auto-trader path as Kalshi trades.
+    let kept = 0;
+    for (const t of trades) {
+      // Sanity: skip if ts is older than our cursor (prevents replay)
+      if (new Date(t.ts).getTime() < sinceMs) continue;
+      addTrade(t);
+      kept++;
+    }
+    lastPolymarketPollMs = Date.now();
+    if (kept > 0) console.log(`[polymarket] +${kept} whale trades`);
+  } catch (err) {
+    console.error('[polymarket] poll error:', err.message);
+  }
+}
+
+setInterval(pollPolymarket, 60 * 1000);
+pollPolymarket(); // run once at startup
 
 // Periodic gap-fill: every 10 minutes, REST-fill any trades the WebSocket may have missed
 setInterval(async () => {
