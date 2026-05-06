@@ -319,8 +319,9 @@ html, body { height: 100%; background: var(--bg); color: var(--text); font-famil
 .badge--pre        { background: rgba(99,179,237,0.15); color: #63b3ed; border: 1px solid rgba(99,179,237,0.3); }
 .badge--live       { background: rgba(72,187,120,0.15); color: #48bb78; border: 1px solid rgba(72,187,120,0.3); }
 .badge--unknown    { opacity: 0.35; }
-.badge--kalshi     { background: rgba(121,192,255,0.15); color: #79c0ff; border: 1px solid rgba(121,192,255,0.3); }
-.badge--polymarket { background: rgba(188,140,255,0.15); color: #bc8cff; border: 1px solid rgba(188,140,255,0.3); }
+/* Brand colors: Kalshi = green, Polymarket = blue */
+.badge--kalshi     { background: rgba(0,184,93,0.15);   color: #00d97e; border: 1px solid rgba(0,184,93,0.35); }
+.badge--polymarket { background: rgba(45,156,219,0.15); color: #4dabf7; border: 1px solid rgba(45,156,219,0.35); }
 .td--source        { text-align: center; }
 .td--tradeid       { font-size: 0.7rem; opacity: 0.6; overflow: hidden; text-overflow: ellipsis; }
 
