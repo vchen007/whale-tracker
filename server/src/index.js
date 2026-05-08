@@ -7,9 +7,10 @@ import fastifyWebsocket from '@fastify/websocket';
 import { loadPrivateKey } from './auth.js';
 import { KalshiClient } from './kalshiClient.js';
 import { AutoTrader } from './autoTrader.js';
-import { initDb, insertTrade, bulkInsert, getTradesSince, getTopMarkets, getOldestTradeTs, getNewestTradeTs, bulkInsertTitles, getTitleCount, getCategorizedTitleCount, getCloseTimeCount, getTickerCategoryMap, getTickerTitleMap, getTickerMetaMap, getRecentlyActiveTickers, refreshMarketMeta, getUniqueSeries, updateCategoriesBySeries, getMissingTitleTickers, getTickersMissingCategory, bulkUpdateCategories, purgeSmallTrades, getAutoOrderSummary } from './db.js';
+import { initDb, insertTrade, bulkInsert, getTradesSince, getTopMarkets, getOldestTradeTs, getNewestTradeTs, bulkInsertTitles, getTitleCount, getCategorizedTitleCount, getCloseTimeCount, getTickerCategoryMap, getTickerTitleMap, getTickerMetaMap, getRecentlyActiveTickers, refreshMarketMeta, setEventActualStartTime, getUniqueSeries, updateCategoriesBySeries, getMissingTitleTickers, getTickersMissingCategory, bulkUpdateCategories, purgeSmallTrades, getAutoOrderSummary } from './db.js';
 import { fetchTradeHistory, fetchAllMarketTitles, fetchCategories, fetchEventData, fetchEventCategoryMap, fetchTitlesByTickers } from './kalshiRest.js';
 import { fetchPolymarketTrades } from './polymarketRest.js';
+import { startSchedulePoller, findKalshiGameStart, findPolymarketGameStart } from './sportsApi.js';
 
 // ── Config ────────────────────────────────────────────────────────────────────
 
@@ -94,9 +95,33 @@ const browserClients = new Set();
 
 let kalshiStatus = 'idle';
 
+// Cache: tickers we've already tried to enrich, so we don't re-look-up on every trade
+const _actualStartLookedUp = new Set();
+
+function tryEnrichActualStart(trade) {
+  if (_actualStartLookedUp.has(trade.ticker)) return;
+  _actualStartLookedUp.add(trade.ticker);
+  let actualStart = null;
+  if (trade.source === 'polymarket') {
+    actualStart = findPolymarketGameStart(trade.title, trade.ts);
+  } else {
+    actualStart = findKalshiGameStart(trade.ticker);
+  }
+  if (actualStart) {
+    setEventActualStartTime(trade.ticker, actualStart);
+    const meta = marketMetaMap.get(trade.ticker) ?? {};
+    marketMetaMap.set(trade.ticker, { ...meta, eventActualStartTime: actualStart });
+  }
+}
+
 function addTrade(trade) {
   if (!isWhale(trade)) return;
   insertTrade(trade);
+  // Enrich with ESPN-derived game start time if we haven't already
+  tryEnrichActualStart(trade);
+  // Attach the cached actual start time to the broadcast so the UI gets it live
+  const meta = marketMetaMap.get(trade.ticker);
+  if (meta?.eventActualStartTime) trade.eventActualStartTime = meta.eventActualStartTime;
   broadcast({ type: 'trade', data: trade });
   autoTrader.onTrade(trade).catch((err) => console.error('[auto-trader] unhandled error', err.message));
 }
@@ -193,6 +218,11 @@ const kalshi = new KalshiClient({
 });
 
 kalshi.connect();
+
+// ── ESPN sports schedule cache ───────────────────────────────────────────────
+// Used to enrich trades with the actual game start time (vs the eventEnd-3h
+// approximation). Hourly background refresh covers today + 2 days ahead.
+startSchedulePoller();
 
 // ── Polymarket ───────────────────────────────────────────────────────────────
 // REST poller — Polymarket's WebSocket needs a Polygon wallet auth flow we

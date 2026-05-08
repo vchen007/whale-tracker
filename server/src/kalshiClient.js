@@ -47,8 +47,9 @@ function normaliseTrade(raw, categoryMap, titleMap, marketMetaMap) {
     ticker,
     category: categoryMap?.get(ticker) ?? categoryFromTicker(ticker),
     title: titleMap?.get(ticker) ?? null,
-    closeTime:      meta.closeTime      ?? null,
-    eventStartTime: meta.eventStartTime ?? null,
+    closeTime:            meta.closeTime            ?? null,
+    eventStartTime:       meta.eventStartTime       ?? null,
+    eventActualStartTime: meta.eventActualStartTime ?? null,
     side: (m.taker_side ?? '').toLowerCase(),   // 'yes' | 'no'
     yesPrice,
     noPrice,

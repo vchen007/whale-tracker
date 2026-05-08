@@ -68,24 +68,26 @@ const TradeRow = memo(function TradeRow({ trade }) {
       <td className="td td--cat">{trade.category}</td>
       <td className="td td--timing">
         {(() => {
-          // Simple rule: trade before event start → PRE, after event start → LIVE.
+          // Trade before event start → PRE, after event start → LIVE.
           //
-          // Kalshi exposes occurrence_datetime, but for live-bet markets it's
-          // the scheduled game END (Kalshi sets close_time far in the future
-          // for these). We approximate game START by subtracting a 3-hour
-          // typical game duration. For pre-only markets (where event_start
-          // ≈ close_time), occurrence_datetime is already the event start.
+          // Best signal: ESPN-derived actual game start time (eventActualStartTime).
+          // Fallback: Kalshi's occurrence_datetime, which for live-bet markets
+          // is the scheduled game END — approximate START by subtracting 3h.
           const HR = 1000 * 60 * 60;
           const GAME_DURATION_HOURS = 3;
           const t = new Date(trade.ts).getTime();
-          const eventStart = trade.eventStartTime ? new Date(trade.eventStartTime).getTime() : null;
-          const close      = trade.closeTime      ? new Date(trade.closeTime).getTime()      : null;
-          if (!eventStart && !close) return <span className="badge badge--unknown">—</span>;
+          const actual     = trade.eventActualStartTime ? new Date(trade.eventActualStartTime).getTime() : null;
+          const eventStart = trade.eventStartTime       ? new Date(trade.eventStartTime).getTime()       : null;
+          const close      = trade.closeTime            ? new Date(trade.closeTime).getTime()            : null;
 
-          const isLiveBetMarket = eventStart && close && (close - eventStart) > 24 * HR;
-          const cutoff = isLiveBetMarket
-            ? eventStart - GAME_DURATION_HOURS * HR  // approx game start = end - 3h
-            : (eventStart ?? close);                  // pre-only: event_start is start
+          let cutoff = actual;
+          if (!cutoff) {
+            if (!eventStart && !close) return <span className="badge badge--unknown">—</span>;
+            const isLiveBetMarket = eventStart && close && (close - eventStart) > 24 * HR;
+            cutoff = isLiveBetMarket
+              ? eventStart - GAME_DURATION_HOURS * HR
+              : (eventStart ?? close);
+          }
 
           return t < cutoff
             ? <span className="badge badge--pre">PRE</span>

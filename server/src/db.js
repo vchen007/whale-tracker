@@ -38,6 +38,7 @@ export function initDb() {
   try { db.exec('ALTER TABLE market_titles ADD COLUMN no_sub     TEXT'); } catch { /* already exists */ }
   try { db.exec('ALTER TABLE market_titles ADD COLUMN close_time TEXT'); } catch { /* already exists */ }
   try { db.exec('ALTER TABLE market_titles ADD COLUMN event_start_time TEXT'); } catch { /* already exists */ }
+  try { db.exec('ALTER TABLE market_titles ADD COLUMN event_actual_start_time TEXT'); } catch { /* already exists */ }
   try { db.exec('ALTER TABLE market_titles ADD COLUMN source TEXT DEFAULT \'kalshi\''); } catch { /* already exists */ }
   try { db.exec('ALTER TABLE trades ADD COLUMN trade_id TEXT');                    } catch { /* already exists */ }
   try { db.exec('ALTER TABLE trades ADD COLUMN source   TEXT DEFAULT \'kalshi\''); } catch { /* already exists */ }
@@ -152,7 +153,8 @@ export function getTradesSince(sinceMs, limit = 10_000, minNotional = 0, sortBy 
            COALESCE(m.title, t.ticker) AS title,
            m.yes_sub AS yesSub, m.no_sub AS noSub,
            m.close_time AS closeTime,
-           m.event_start_time AS eventStartTime
+           m.event_start_time AS eventStartTime,
+           m.event_actual_start_time AS eventActualStartTime
     FROM trades t
     LEFT JOIN market_titles m ON m.ticker = t.ticker
     WHERE t.ts_ms >= ?
@@ -239,14 +241,24 @@ export function getTickerCategoryMap() {
 }
 
 export function getTickerMetaMap() {
-  // Returns Map<ticker, { closeTime, eventStartTime }> for tickers with active trades
+  // Returns Map<ticker, { closeTime, eventStartTime, eventActualStartTime }>
+  // for tickers with active trades.
   const rows = db.prepare(`
-    SELECT m.ticker, m.close_time AS closeTime, m.event_start_time AS eventStartTime
+    SELECT m.ticker,
+           m.close_time AS closeTime,
+           m.event_start_time AS eventStartTime,
+           m.event_actual_start_time AS eventActualStartTime
     FROM market_titles m
-    WHERE (m.close_time IS NOT NULL OR m.event_start_time IS NOT NULL)
+    WHERE (m.close_time IS NOT NULL
+        OR m.event_start_time IS NOT NULL
+        OR m.event_actual_start_time IS NOT NULL)
       AND m.ticker IN (SELECT DISTINCT ticker FROM trades)
   `).all();
-  return new Map(rows.map((r) => [r.ticker, { closeTime: r.closeTime, eventStartTime: r.eventStartTime }]));
+  return new Map(rows.map((r) => [r.ticker, {
+    closeTime: r.closeTime,
+    eventStartTime: r.eventStartTime,
+    eventActualStartTime: r.eventActualStartTime,
+  }]));
 }
 
 // Tickers traded recently — used by the metadata refresher to keep
@@ -265,6 +277,14 @@ export function refreshMarketMeta(ticker, closeTime, eventStartTime) {
         event_start_time = COALESCE(?, event_start_time)
     WHERE ticker = ?
   `).run(closeTime, eventStartTime, ticker);
+}
+
+export function setEventActualStartTime(ticker, isoTime) {
+  return db.prepare(`
+    INSERT INTO market_titles (ticker, title, event_actual_start_time)
+    VALUES (?, '', ?)
+    ON CONFLICT(ticker) DO UPDATE SET event_actual_start_time = excluded.event_actual_start_time
+  `).run(ticker, isoTime);
 }
 
 export function getTickerTitleMap() {
