@@ -206,17 +206,36 @@ async function pollPolymarket() {
     const trades = await fetchPolymarketTrades(sinceMs);
     if (trades.length === 0) return;
 
-    // Insert each trade through addTrade so it goes through the same whale
-    // filter, broadcast, and (gated) auto-trader path as Kalshi trades.
+    // Each Polymarket trade arrives with title + category already enriched.
+    // Upsert into market_titles so the dashboard's JOIN can render the title
+    // (instead of the raw ticker like "PM-0xacc23a9c2a5601-1").
+    const titleRows = [];
+    const seen = new Set();
+    for (const t of trades) {
+      if (!t.title || seen.has(t.ticker)) continue;
+      seen.add(t.ticker);
+      titleRows.push([
+        t.ticker,
+        t.title,
+        t.category,
+        t.outcome ?? null,    // yes_sub: which outcome the YES side represents
+        null,                 // no_sub: Polymarket markets are per-outcome, no separate NO label
+        null,                 // close_time: not in the trade payload
+        null,                 // event_start_time: not in the trade payload
+      ]);
+      titleMap.set(t.ticker, t.title);
+      categoryMap.set(t.ticker, t.category);
+    }
+    if (titleRows.length > 0) bulkInsertTitles(titleRows, 'polymarket');
+
     let kept = 0;
     for (const t of trades) {
-      // Sanity: skip if ts is older than our cursor (prevents replay)
       if (new Date(t.ts).getTime() < sinceMs) continue;
       addTrade(t);
       kept++;
     }
     lastPolymarketPollMs = Date.now();
-    if (kept > 0) console.log(`[polymarket] +${kept} whale trades`);
+    if (kept > 0) console.log(`[polymarket] +${kept} whale trades, ${titleRows.length} new titles`);
   } catch (err) {
     console.error('[polymarket] poll error:', err.message);
   }
