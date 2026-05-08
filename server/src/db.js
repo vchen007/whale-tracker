@@ -193,6 +193,8 @@ export function getTopMarkets(sinceMs, limit = 100) {
     SELECT
       t.ticker,
       COALESCE(m.title, '') AS title,
+      m.yes_sub AS yesSub,
+      m.no_sub  AS noSub,
       COALESCE(m.category, t.category) AS category,
       t.source,
       COUNT(*) AS tradeCount,

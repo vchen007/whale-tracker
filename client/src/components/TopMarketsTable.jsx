@@ -37,7 +37,10 @@ export default function TopMarketsTable({ markets }) {
               <tr key={m.ticker} className="trade-row">
                 <td className="td td--mono">{i + 1}</td>
                 <td className="td td--ticker" title={m.ticker}>{m.ticker}</td>
-                <td className="td td--title">{m.title || '—'}</td>
+                <td className="td td--title">
+                  {m.title || '—'}
+                  {m.yesSub && <span className="td--outcome"> ▸ {m.yesSub}</span>}
+                </td>
                 <td className="td td--cat">{m.category}</td>
                 <td className="td td--mono">{m.tradeCount.toLocaleString()}</td>
                 <td className="td td--notional td--yes-vol">{fmtNotional(yes)}</td>
