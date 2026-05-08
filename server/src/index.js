@@ -19,14 +19,27 @@ const API_KEY_ID  = process.env.KALSHI_API_KEY_ID;
 const PRIVATE_KEY_PATH = process.env.KALSHI_PRIVATE_KEY_PATH;
 const THIRTY_DAYS_MS = 30 * 24 * 60 * 60 * 1000;
 const MIN_NOTIONAL_DOLLARS = Number(process.env.MIN_NOTIONAL_DOLLARS ?? 10_000);
+// Trades at >=99¢ on the side they bought are zero-EV settlement transfers
+// (closing positions, wash trades, OTC) — not real conviction signals.
+// Skip them to keep the dashboard clean.
+const ZERO_EV_PRICE_CENTS = 99;
+
+function tradePriceCents(trade) {
+  return trade.side === 'yes' ? (trade.yesPrice ?? 0) : (trade.noPrice ?? 0);
+}
 
 function tradeNotional(trade) {
-  const price = trade.side === 'yes' ? (trade.yesPrice ?? 0) : (trade.noPrice ?? 0);
-  return (trade.count * price) / 100;
+  return (trade.count * tradePriceCents(trade)) / 100;
 }
 
 function isWhale(trade) {
   return tradeNotional(trade) >= MIN_NOTIONAL_DOLLARS;
+}
+
+function isMeaningfulSignal(trade) {
+  // Skip zero-EV settlement trades — buying at >=99¢ has no upside to bet
+  // on, so it's almost never a directional whale signal.
+  return tradePriceCents(trade) < ZERO_EV_PRICE_CENTS;
 }
 
 if (!API_KEY_ID || !PRIVATE_KEY_PATH) {
@@ -116,6 +129,7 @@ function tryEnrichActualStart(trade) {
 
 function addTrade(trade) {
   if (!isWhale(trade)) return;
+  if (!isMeaningfulSignal(trade)) return;  // skip 99-100¢ settlement trades
   insertTrade(trade);
   // Enrich with ESPN-derived game start time if we haven't already
   tryEnrichActualStart(trade);
