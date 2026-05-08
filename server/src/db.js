@@ -194,9 +194,12 @@ export function getTopMarkets(sinceMs, limit = 100) {
       t.ticker,
       COALESCE(m.title, '') AS title,
       COALESCE(m.category, t.category) AS category,
+      t.source,
       COUNT(*) AS tradeCount,
       SUM(CASE t.side WHEN 'yes' THEN t.count * COALESCE(t.yes_price, 0)
-                                  ELSE t.count * COALESCE(t.no_price,  0) END) / 100 AS totalNotional
+                                  ELSE t.count * COALESCE(t.no_price,  0) END) / 100 AS totalNotional,
+      SUM(CASE WHEN t.side = 'yes' THEN t.count * COALESCE(t.yes_price, 0) ELSE 0 END) / 100 AS yesNotional,
+      SUM(CASE WHEN t.side = 'no'  THEN t.count * COALESCE(t.no_price,  0) ELSE 0 END) / 100 AS noNotional
     FROM trades t
     LEFT JOIN market_titles m ON m.ticker = t.ticker
     WHERE t.ts_ms >= ?

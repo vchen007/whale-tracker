@@ -77,12 +77,17 @@ html, body { height: 100%; background: var(--bg); color: var(--text); font-famil
 .tab-btn--active { color: var(--cyan); border-bottom-color: var(--cyan); }
 
 /* ── Top markets table ───────────────────────────────────────────────────── */
-.top-markets-table .th:nth-child(1) { width: 3rem;  }
-.top-markets-table .th:nth-child(2) { width: 18rem; }
-.top-markets-table .th:nth-child(3) { width: auto;  }
-.top-markets-table .th:nth-child(4) { width: 8rem;  }
-.top-markets-table .th:nth-child(5) { width: 6rem;  }
-.top-markets-table .th:nth-child(6) { width: 8rem;  }
+.top-markets-table .th:nth-child(1) { width: 3rem;  }     /* # */
+.top-markets-table .th:nth-child(2) { width: 18rem; }     /* MARKET */
+.top-markets-table .th:nth-child(3) { width: auto;  }     /* TITLE */
+.top-markets-table .th:nth-child(4) { width: 8rem;  }     /* CAT */
+.top-markets-table .th:nth-child(5) { width: 5rem;  }     /* TRADES */
+.top-markets-table .th:nth-child(6) { width: 7rem;  }     /* YES VOL */
+.top-markets-table .th:nth-child(7) { width: 7rem;  }     /* NO VOL */
+.top-markets-table .th:nth-child(8) { width: 7rem;  }     /* TOTAL */
+.top-markets-table .th:nth-child(9) { width: 5rem;  }     /* YES% */
+.td--yes-vol { color: var(--green); }
+.td--no-vol  { color: var(--red); }
 
 /* ── Refresh button ─────────────────────────────────────────────────────── */
 .refresh-btn {
