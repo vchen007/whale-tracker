@@ -13,21 +13,30 @@ const ESPN_BASE = 'https://site.api.espn.com/apis/site/v2/sports';
 const REFRESH_MS = 60 * 60 * 1000; // every 60 min
 const SCHEDULE_LOOKAHEAD_DAYS = 2;
 
-// Map Kalshi ticker prefix → ESPN sport path
-const KALSHI_PREFIX_TO_SPORT = {
-  'KXNBAGAME':       { league: 'nba',           path: 'basketball/nba' },
-  'KXNHLGAME':       { league: 'nhl',           path: 'hockey/nhl' },
-  'KXMLBGAME':       { league: 'mlb',           path: 'baseball/mlb' },
-  'KXNFLGAME':       { league: 'nfl',           path: 'football/nfl' },
-  'KXEPLGAME':       { league: 'epl',           path: 'soccer/eng.1' },
-  'KXLALIGAGAME':    { league: 'laliga',        path: 'soccer/esp.1' },
-  'KXBUNDESLIGA':    { league: 'bundesliga',    path: 'soccer/ger.1' },
-  'KXSERIEAGAME':    { league: 'seriea',        path: 'soccer/ita.1' },
-  'KXUCLGAME':       { league: 'uefa-champ',    path: 'soccer/uefa.champions' },
-  'KXMLSGAME':       { league: 'mls',           path: 'soccer/usa.1' },
+// Map Kalshi league code → ESPN sport path. We detect the league from any
+// prefix that starts with KX<LEAGUE>... so we cover GAME, SPREAD, TOTAL,
+// SERIES, RFI (run-first-inning), etc. — they all use the same date+team
+// encoding under the league.
+const LEAGUE_TO_SPORT = {
+  'NBA':       'basketball/nba',
+  'NHL':       'hockey/nhl',
+  'MLB':       'baseball/mlb',
+  'NFL':       'football/nfl',
+  'EPL':       'soccer/eng.1',
+  'LALIGA':    'soccer/esp.1',
+  'BUNDES':    'soccer/ger.1',
+  'SERIEA':    'soccer/ita.1',
+  'UCL':       'soccer/uefa.champions',
+  'MLS':       'soccer/usa.1',
 };
 
-const SUPPORTED_SPORT_PATHS = [...new Set(Object.values(KALSHI_PREFIX_TO_SPORT).map((s) => s.path))];
+// Regex: KX<LEAGUE><anything>-<rest>. The league is greedy-matched against
+// LEAGUE_TO_SPORT keys, longest match wins (handles BUNDESLIGA vs BUNDES).
+const KALSHI_LEAGUE_RE = new RegExp(
+  '^KX(' + Object.keys(LEAGUE_TO_SPORT).sort((a, b) => b.length - a.length).join('|') + ')',
+);
+
+const SUPPORTED_SPORT_PATHS = [...new Set(Object.values(LEAGUE_TO_SPORT))];
 
 // Map polymarket-style team/league hints → ESPN path. Polymarket titles often
 // say "Lakers vs. Thunder" etc. We sample tags + titles to detect sport.
@@ -143,23 +152,24 @@ export function lookupGameStart(sportPath, teamA, teamB, dateUtc) {
  */
 export function parseKalshiTicker(ticker) {
   if (!ticker) return null;
-  // Match prefix
-  let prefix = null;
-  for (const p of Object.keys(KALSHI_PREFIX_TO_SPORT)) {
-    if (ticker.startsWith(p + '-')) { prefix = p; break; }
-  }
-  if (!prefix) return null;
-  const sport = KALSHI_PREFIX_TO_SPORT[prefix];
 
-  // Strip prefix; remainder format: <date><teamPair>-<outcome>
-  const rest = ticker.slice(prefix.length + 1);
-  const dashIdx = rest.lastIndexOf('-');
+  // Detect league from prefix (KXNBA*, KXMLB*, KXNHL*, KXNFL*, etc.)
+  const leagueMatch = ticker.match(KALSHI_LEAGUE_RE);
+  if (!leagueMatch) return null;
+  const sport = LEAGUE_TO_SPORT[leagueMatch[1]];
+
+  // Strip the prefix up to the first '-' (e.g., "KXNBASPREAD-" or "KXNBAGAME-")
+  const dashIdx = ticker.indexOf('-');
   if (dashIdx < 0) return null;
-  const dateAndTeams = rest.slice(0, dashIdx);
-  const outcome = rest.slice(dashIdx + 1);
+  const rest = ticker.slice(dashIdx + 1);
 
-  // Date is YYMMMDD (7 chars: 2 digit year, 3 letter month, 2 digit day)
-  // Some leagues append HHMM (4 more chars) for game time
+  // Remainder format: <date><[hhmm]><teamPair>-<outcome>
+  const lastDash = rest.lastIndexOf('-');
+  if (lastDash < 0) return null;
+  const dateAndTeams = rest.slice(0, lastDash);
+  const outcome = rest.slice(lastDash + 1);
+
+  // Date is YYMMMDD (2 digit year, 3 letter month, 2 digit day)
   const months = { JAN:0,FEB:1,MAR:2,APR:3,MAY:4,JUN:5,JUL:6,AUG:7,SEP:8,OCT:9,NOV:10,DEC:11 };
   const dateMatch = dateAndTeams.match(/^(\d{2})([A-Z]{3})(\d{2})/);
   if (!dateMatch) return null;
@@ -175,16 +185,14 @@ export function parseKalshiTicker(ticker) {
   if (/^\d{4}/.test(dateAndTeams.slice(7, 11))) cursor = 11;
   const teamBlob = dateAndTeams.slice(cursor);
 
-  // teamBlob = "LALOKC" — we don't know how to split, so return both halves
-  // for the caller to try matching. Most NBA/MLB/NHL codes are 2-3 chars.
-  // Provide all plausible 2-3 char split combinations.
+  // teamBlob = "LALOKC" or "DENMIN" — try all plausible 2-4 char splits
   const splits = [];
   for (let n = 2; n <= 4; n++) {
     if (teamBlob.length - n >= 2 && teamBlob.length - n <= 4) {
       splits.push([teamBlob.slice(0, n), teamBlob.slice(n)]);
     }
   }
-  return { sport: sport.path, splits, outcome, date: dateStr, teamBlob };
+  return { sport, splits, outcome, date: dateStr, teamBlob };
 }
 
 /**
