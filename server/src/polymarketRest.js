@@ -24,6 +24,92 @@ function ticker(t) {
 }
 
 /**
+ * Polymarket has no `category` field — events expose `series` (e.g. "NBA")
+ * and `tags` (e.g. ["Crypto Prices", "Bitcoin", "5M"]). Map those to one of
+ * the 14 Kalshi top-level categories so the dashboard CAT column is
+ * consistent across both sources.
+ */
+function mapToCategory(seriesName, tags) {
+  const tagSet = new Set((tags ?? []).map((t) => String(t).toLowerCase()));
+  const series = (seriesName ?? '').toLowerCase();
+
+  const has = (...needles) => needles.some((n) => tagSet.has(n));
+  const seriesIs = (...needles) => needles.some((n) => series.includes(n));
+
+  // Sports leagues
+  if (seriesIs('nba','mlb','nfl','nhl','epl','la liga','bundesliga','serie a',
+               'champions league','tennis','golf','ufc','boxing','soccer','f1','formula','ipl','nascar')) return 'Sports';
+  if (has('sports','nba','mlb','nfl','nhl','epl','soccer','tennis','golf','ufc','boxing','ipl')) return 'Sports';
+
+  // Crypto
+  if (has('crypto','bitcoin','ethereum','solana','crypto prices','btc','eth','sol','doge','xrp')) return 'Crypto';
+
+  // Elections vs broader politics
+  if (has('elections','election','presidential','primary')) return 'Elections';
+  if (has('politics','trump','biden','congress','senate','house','supreme court')) return 'Politics';
+
+  // Economics / Financials
+  if (has('economics','fed','inflation','gdp','interest rates','jobs','employment')) return 'Economics';
+  if (has('stocks','financial','financials','sp500','dow jones','nasdaq','earnings')) return 'Financials';
+
+  // Commodities
+  if (has('oil','gas','commodities','metals','gold','silver')) return 'Commodities';
+
+  // Companies
+  if (has('companies','ipo','elon musk','ceos','layoffs','product launches')) return 'Companies';
+
+  // Climate / Weather
+  if (has('climate','weather','temperature','snow','rain','hurricanes','natural disasters')) return 'Climate and Weather';
+
+  // Health
+  if (has('health','medical','pandemic','disease')) return 'Health';
+
+  // Science & Tech
+  if (has('science','technology','ai','artificial intelligence','tech','space','nasa')) return 'Science and Technology';
+
+  // Entertainment
+  if (has('entertainment','movies','music','tv','celebrities','grammy','oscar','emmy')) return 'Entertainment';
+
+  // Social / Mentions (Polymarket calls these "tweets" sometimes)
+  if (has('mentions','tweets')) return 'Mentions';
+  if (has('social','viral','memes')) return 'Social';
+
+  return 'Other';
+}
+
+// Slug → category cache so we don't re-hit Gamma API for every trade
+const _categoryCache = new Map();
+
+async function getCategoryForEvent(eventSlug) {
+  if (!eventSlug) return 'Other';
+  if (_categoryCache.has(eventSlug)) return _categoryCache.get(eventSlug);
+
+  try {
+    const res = await fetch(`${GAMMA_URL}/events?slug=${encodeURIComponent(eventSlug)}`, {
+      headers: { 'User-Agent': 'whale-tracker/1.0' },
+    });
+    if (!res.ok) {
+      _categoryCache.set(eventSlug, 'Other');
+      return 'Other';
+    }
+    const arr = await res.json();
+    const event = Array.isArray(arr) && arr.length > 0 ? arr[0] : null;
+    if (!event) {
+      _categoryCache.set(eventSlug, 'Other');
+      return 'Other';
+    }
+    const seriesName = (event.series?.[0]?.title) ?? event.seriesSlug ?? '';
+    const tags = (event.tags ?? []).map((t) => (typeof t === 'string' ? t : t?.label));
+    const category = mapToCategory(seriesName, tags);
+    _categoryCache.set(eventSlug, category);
+    return category;
+  } catch {
+    _categoryCache.set(eventSlug, 'Other');
+    return 'Other';
+  }
+}
+
+/**
  * Map Polymarket trade → unified trade shape.
  *
  * Polymarket pricing is in dollars (0–1). We convert to cents (0–100) so the
@@ -34,7 +120,7 @@ function ticker(t) {
  * = "no" side). For binary Yes/No markets this maps cleanly; for multi-leg
  * markets the ticker captures which outcome was traded.
  */
-function normaliseTrade(t) {
+function normaliseTrade(t, category = 'Other') {
   const priceCents = Math.round(parseFloat(t.price ?? 0) * 100);
   const count = Math.round(parseFloat(t.size ?? 0));
   const isYesSide = (t.outcomeIndex ?? 0) === 0;
@@ -48,7 +134,7 @@ function normaliseTrade(t) {
     tradeId: t.transactionHash ?? null,
     ticker: ticker(t),
     title: t.title ?? null,
-    category: 'Polymarket',
+    category,
     source: 'polymarket',
     outcome: t.outcome ?? null,
     side: isYesSide ? 'yes' : 'no',
@@ -96,7 +182,15 @@ export async function fetchPolymarketTrades(sinceMs) {
     offset += data.length;
     await new Promise((r) => setTimeout(r, 200));
   }
-  return trades.map(normaliseTrade);
+
+  // Enrich each trade with its event's category. Lookups are cached by slug
+  // so we hit Gamma API at most once per unique event per server lifetime.
+  const result = [];
+  for (const t of trades) {
+    const category = await getCategoryForEvent(t.eventSlug ?? t.slug);
+    result.push(normaliseTrade(t, category));
+  }
+  return result;
 }
 
 /**
