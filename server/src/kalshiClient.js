@@ -4,11 +4,85 @@ import { buildAuthParams } from './auth.js';
 const RECONNECT_DELAY_MS = 5_000;
 
 /**
+ * Map Kalshi ticker prefix → canonical Kalshi category. Used as a fallback
+ * when the events API didn't give us a category for a market. Longer
+ * prefixes are checked first (e.g. KXNBAEAST before KXNBA) so that the
+ * most-specific match wins.
+ */
+const TICKER_PREFIX_TO_CATEGORY = {
+  // ── Sports ────────────────────────────────────────────────────────────
+  // Basketball
+  'KXNBA': 'Sports', 'KXWNBA': 'Sports', 'KXNCAAMB': 'Sports', 'KXNCAAWB': 'Sports',
+  // Baseball
+  'KXMLB': 'Sports', 'KXNCAABASE': 'Sports',
+  // Hockey
+  'KXNHL': 'Sports',
+  // American football
+  'KXNFL': 'Sports', 'KXNCAAFB': 'Sports', 'KXCFL': 'Sports',
+  // Soccer
+  'KXEPL': 'Sports', 'KXLALIGA': 'Sports', 'KXBUNDESLIGA': 'Sports',
+  'KXSERIEA': 'Sports', 'KXLIGUE1': 'Sports', 'KXMLS': 'Sports',
+  'KXUCL': 'Sports', 'KXUEFA': 'Sports', 'KXARGPREMDIV': 'Sports',
+  'KXBRASILEIRAO': 'Sports', 'KXFIFA': 'Sports',
+  // Cricket
+  'KXIPL': 'Sports', 'KXCRICKET': 'Sports', 'KXICC': 'Sports',
+  // Tennis
+  'KXATP': 'Sports', 'KXWTA': 'Sports', 'KXITF': 'Sports',
+  // Golf
+  'KXPGA': 'Sports', 'KXLPGA': 'Sports', 'KXMASTERS': 'Sports',
+  // Combat sports
+  'KXUFC': 'Sports', 'KXBOXING': 'Sports',
+  // Motorsports
+  'KXF1': 'Sports', 'KXNASCAR': 'Sports', 'KXINDYCAR': 'Sports',
+  // Multi-leg props that are explicitly sports
+  'KXMVESPORTS': 'Sports',
+  // International / world tournament
+  'KXMENWORLDCUP': 'Sports', 'KXWOMENWORLDCUP': 'Sports', 'KXOLYMPICS': 'Sports',
+  // Other sports
+  'KXAFL': 'Sports', 'KXAPFDDH': 'Sports', 'KXDIMAYORGAME': 'Sports',
+  'KXNCAAMLAX': 'Sports', 'KXVALORANTGAME': 'Sports', 'KXHIGH': 'Sports',
+  // Esports
+  'KXCS2': 'Sports', 'KXLOL': 'Sports', 'KXDOTA': 'Sports',
+
+  // ── Crypto ────────────────────────────────────────────────────────────
+  'KXBTC': 'Crypto', 'KXETH': 'Crypto', 'KXSOL': 'Crypto',
+  'KXDOGE': 'Crypto', 'KXXRP': 'Crypto', 'KXBNB': 'Crypto',
+  'KXHYPE': 'Crypto', 'KXLINK': 'Crypto',
+
+  // ── Financials ────────────────────────────────────────────────────────
+  'KXINXU': 'Financials', 'KXSPX': 'Financials', 'KXNDX': 'Financials',
+  'KXDOW': 'Financials',
+
+  // ── Politics & Elections ──────────────────────────────────────────────
+  'KXFEDCHAIR': 'Politics', 'KXSAVEACT': 'Politics',
+  'KXDHSFUND': 'Politics', 'KXGOVTSHUT': 'Politics',
+  'KXTRUMPMENTION': 'Politics', 'KXFEDDECISION': 'Politics',
+  'KXPRESNOM': 'Elections', 'KXMOVVAREDISTRICT': 'Elections',
+  'KXGOV': 'Elections',  // catches KXGOVCA, KXGOVOH, etc. — state-governor races
+
+  // ── Companies / Mentions ──────────────────────────────────────────────
+  'KXHOOD': 'Companies', 'KXMRBEAST': 'Mentions',
+
+  // ── Entertainment ─────────────────────────────────────────────────────
+  'KXMETGALA': 'Entertainment', 'KXOSCAR': 'Entertainment',
+  'KXEMMY': 'Entertainment', 'KXGRAMMY': 'Entertainment',
+  'KXSURVIVOR': 'Entertainment',
+
+  // ── Other / multi-category ────────────────────────────────────────────
+  'KXMVECROSSCATEGORY': 'Other',
+};
+
+const _sortedPrefixes = Object.keys(TICKER_PREFIX_TO_CATEGORY).sort((a, b) => b.length - a.length);
+
+/**
  * Extract a human-readable category from a Kalshi market ticker.
- * Tickers look like: BTCD-25DEC-T50000, INXD-25JAN-P4500, KXBTCD-25NOV-T45000
- * The first segment (before the first hyphen) is the series root.
+ * Falls back to the raw prefix only when no mapping matches.
  */
 export function categoryFromTicker(ticker = '') {
+  if (!ticker) return 'UNKNOWN';
+  for (const prefix of _sortedPrefixes) {
+    if (ticker.startsWith(prefix)) return TICKER_PREFIX_TO_CATEGORY[prefix];
+  }
   return ticker.split('-')[0] || 'UNKNOWN';
 }
 
