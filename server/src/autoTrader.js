@@ -91,11 +91,13 @@ export class AutoTrader {
    *
    * Polymarket trades are tracked but NOT auto-traded — that requires a
    * Polygon wallet + USDC which we haven't wired up. Source-gate here.
+   *
+   * `category = 'ALL'` (or null) means trade every category.
    */
   async onTrade(trade) {
     if (!this.enabled) return;
     if ((trade.source ?? 'kalshi') !== 'kalshi') return;
-    if (trade.category !== this.category) return;
+    if (this.category && this.category !== 'ALL' && trade.category !== this.category) return;
 
     const price = trade.side === 'yes' ? (trade.yesPrice ?? 0) : (trade.noPrice ?? 0);
     if (!price) return;
