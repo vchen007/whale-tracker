@@ -61,6 +61,9 @@ const TradeRow = memo(function TradeRow({ trade }) {
       </td>
       <td className="td td--title" title={trade.title ?? ''}>
         {trade.title ?? '—'}
+        {trade.source === 'polymarket' && trade.outcome && (
+          <span className="td--outcome"> ▸ {trade.outcome}</span>
+        )}
       </td>
       <td className="td td--cat">{trade.category}</td>
       <td className="td td--timing">

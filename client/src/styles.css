@@ -323,6 +323,7 @@ html, body { height: 100%; background: var(--bg); color: var(--text); font-famil
 .badge--kalshi     { background: rgba(0,184,93,0.15);   color: #00d97e; border: 1px solid rgba(0,184,93,0.35); }
 .badge--polymarket { background: rgba(45,156,219,0.15); color: #4dabf7; border: 1px solid rgba(45,156,219,0.35); }
 .td--source        { text-align: center; }
+.td--outcome       { color: var(--cyan); font-weight: 600; margin-left: 0.4rem; }
 .td--tradeid       { font-size: 0.7rem; opacity: 0.6; overflow: hidden; text-overflow: ellipsis; }
 
 .side--yes { color: var(--green); }
