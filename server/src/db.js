@@ -89,6 +89,18 @@ export function settleAutoOrder(clientOrderId, { outcome, pnlCents, settledTs })
   `).run(outcome, pnlCents, settledTs, clientOrderId);
 }
 
+// Mark an auto-order as closed early via SELL (stop-loss / take-profit / manual)
+export function closeAutoOrderEarly(clientOrderId, { pnlCents, soldPrice, ts }) {
+  return db.prepare(`
+    UPDATE auto_orders
+    SET status = 'closed_early',
+        outcome = ?,
+        pnl_cents = ?,
+        settled_ts = ?
+    WHERE client_order_id = ?
+  `).run(pnlCents > 0 ? 'win' : 'loss', pnlCents, ts, clientOrderId);
+}
+
 export function getAutoOrderSummary() {
   const totals = db.prepare(`
     SELECT

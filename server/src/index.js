@@ -90,12 +90,14 @@ const thirtyDaysAgo = Date.now() - THIRTY_DAYS_MS;
 
 const autoTrader = new AutoTrader({
   privateKey,
-  apiKeyId:     API_KEY_ID,
-  enabled:      process.env.AUTO_TRADER_ENABLED !== 'false',
-  category:     process.env.AUTO_TRADER_CATEGORY ?? 'Sports',
-  count:        Number(process.env.AUTO_TRADER_COUNT ?? 1),
-  minNotional:  Number(process.env.AUTO_TRADER_MIN_NOTIONAL ?? 20_000),
-  minNetProfit: Number(process.env.AUTO_TRADER_MIN_NET_PROFIT ?? 0.02),
+  apiKeyId:        API_KEY_ID,
+  enabled:         process.env.AUTO_TRADER_ENABLED !== 'false',
+  category:        process.env.AUTO_TRADER_CATEGORY ?? 'Sports',
+  count:           Number(process.env.AUTO_TRADER_COUNT ?? 1),
+  minNotional:     Number(process.env.AUTO_TRADER_MIN_NOTIONAL ?? 20_000),
+  minNetProfit:    Number(process.env.AUTO_TRADER_MIN_NET_PROFIT ?? 0.02),
+  stopLossEnabled: process.env.AUTO_TRADER_STOP_LOSS_ENABLED !== 'false',
+  stopLossCents:   Number(process.env.AUTO_TRADER_STOP_LOSS_CENTS ?? 20),
 });
 
 // ── Category map (ticker → human-readable category) ──────────────────────────
@@ -334,6 +336,18 @@ setInterval(async () => {
   }
   if (updated > 0) console.log(`[meta] refreshed ${updated}/${tickers.length} active tickers`);
 }, 20 * 60 * 1000);
+
+// Periodic stop-loss check: every 3 minutes, scan open positions for those
+// where the current bid has fallen ≥ stopLossCents below our entry. Closes
+// the position via SELL order to cap the loss.
+setInterval(async () => {
+  try {
+    const { closed } = await autoTrader.checkStopLosses();
+    if (closed > 0) console.log(`[auto-trader] stop-loss closed ${closed} positions`);
+  } catch (err) {
+    console.error('[auto-trader] stop-loss check error:', err.message);
+  }
+}, 3 * 60 * 1000);
 
 // Periodic settlement check: every 15 minutes, look up open auto-trader orders
 // against Kalshi market status. When a market settles, record outcome + P&L.

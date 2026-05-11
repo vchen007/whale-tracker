@@ -1,6 +1,6 @@
 import { sign, constants } from 'crypto';
 import { notifyTrade } from './notify.js';
-import { insertAutoOrder, getOpenAutoOrders, settleAutoOrder } from './db.js';
+import { insertAutoOrder, getOpenAutoOrders, settleAutoOrder, closeAutoOrderEarly } from './db.js';
 
 const REST_BASE  = 'https://api.elections.kalshi.com/trade-api/v2';
 const ORDER_PATH = '/trade-api/v2/portfolio/orders';
@@ -55,15 +55,28 @@ export class AutoTrader {
    * @param {number}  [opts.count]              contracts per copy-trade (default 1)
    * @param {number}  [opts.minNotional]        min trade notional in dollars to copy (default 20000)
    * @param {number}  [opts.minNetProfit]       min net profit if win, in dollars (default 0.02 = 2¢)
+   * @param {boolean} [opts.stopLossEnabled]    enable stop-loss closing (default true)
+   * @param {number}  [opts.stopLossCents]      close position if current bid ≤ entry − N (default 20¢)
    */
-  constructor({ privateKey, apiKeyId, enabled = true, category = 'Sports', count = 1, minNotional = 20_000, minNetProfit = 0.02 }) {
-    this.privateKey   = privateKey;
-    this.apiKeyId     = apiKeyId;
-    this.enabled      = enabled;
-    this.category     = category;
-    this.count        = count;
-    this.minNotional  = minNotional;
-    this.minNetProfit = minNetProfit;
+  constructor({
+    privateKey, apiKeyId,
+    enabled = true,
+    category = 'Sports',
+    count = 1,
+    minNotional = 20_000,
+    minNetProfit = 0.02,
+    stopLossEnabled = true,
+    stopLossCents = 20,
+  }) {
+    this.privateKey      = privateKey;
+    this.apiKeyId        = apiKeyId;
+    this.enabled         = enabled;
+    this.category        = category;
+    this.count           = count;
+    this.minNotional     = minNotional;
+    this.minNetProfit    = minNetProfit;
+    this.stopLossEnabled = stopLossEnabled;
+    this.stopLossCents   = stopLossCents;
 
     // Simple in-memory log of recent orders (capped at 500)
     this.log = [];
@@ -76,12 +89,14 @@ export class AutoTrader {
 
   status() {
     return {
-      enabled:      this.enabled,
-      category:     this.category,
-      count:        this.count,
-      minNotional:  this.minNotional,
-      minNetProfit: this.minNetProfit,
-      recentOrders: this.log.slice(-20),
+      enabled:         this.enabled,
+      category:        this.category,
+      count:           this.count,
+      minNotional:     this.minNotional,
+      minNetProfit:    this.minNetProfit,
+      stopLossEnabled: this.stopLossEnabled,
+      stopLossCents:   this.stopLossCents,
+      recentOrders:    this.log.slice(-20),
     };
   }
 
@@ -252,5 +267,119 @@ export class AutoTrader {
       }
     }
     return { checked: open.length, settled: settledCount };
+  }
+
+  /**
+   * Stop-loss watchdog. Poll current market prices for open positions and
+   * close any where the side-we-hold's current bid has fallen at least
+   * stopLossCents below our entry price. Caps tail losses on bets that move
+   * heavily against us before settlement.
+   *
+   * Sells at (current bid − 1¢) to guarantee fill (eats a 1¢ slippage cost
+   * to ensure we actually escape the position).
+   *
+   * Should be called periodically (e.g., every 3 minutes).
+   */
+  async checkStopLosses() {
+    if (!this.stopLossEnabled) return { checked: 0, closed: 0 };
+    const open = getOpenAutoOrders();
+    if (open.length === 0) return { checked: 0, closed: 0 };
+
+    let closedCount = 0;
+    for (const o of open) {
+      try {
+        const res = await fetch(`${REST_BASE}/markets/${o.ticker}`);
+        if (!res.ok) continue;
+        const data = await res.json();
+        const m = data.market ?? {};
+        if (m.status !== 'active') continue; // skip closed/settled markets
+
+        // Current bid on the side we hold (we'll sell into it)
+        const bidField = o.side === 'yes' ? 'yes_bid_dollars' : 'no_bid_dollars';
+        const bidDollars = parseFloat(m[bidField] ?? 0);
+        if (!bidDollars || bidDollars <= 0) continue;
+        const currentBidCents = Math.round(bidDollars * 100);
+
+        // Has the market dropped by stopLossCents or more from our entry?
+        const lossSoFar = o.entry_price - currentBidCents;
+        if (lossSoFar < this.stopLossCents) continue;
+
+        // Trigger! Place a SELL at (bid - 1c) to ensure fill
+        const sellPrice = Math.max(1, currentBidCents - 1);
+        await this._closePosition(o, sellPrice, 'stop_loss');
+        closedCount++;
+      } catch (err) {
+        console.error(`[auto-trader] stop-loss check error ${o.ticker}:`, err.message);
+      }
+    }
+    if (closedCount > 0) console.log(`[auto-trader] stop-loss: closed ${closedCount}/${open.length} open positions`);
+    return { checked: open.length, closed: closedCount };
+  }
+
+  /**
+   * Close an open position by placing a SELL order at the given price.
+   * Updates DB and sends notification email.
+   */
+  async _closePosition(order, sellPriceCents, reason = 'manual') {
+    const clientOrderId = `close-${order.client_order_id.slice(-12)}-${Date.now().toString(36)}`;
+    const body = {
+      ticker:          order.ticker,
+      client_order_id: clientOrderId,
+      type:            'limit',
+      action:          'sell',
+      side:            order.side,
+      count:           order.count,
+      ...(order.side === 'yes' ? { yes_price: sellPriceCents } : { no_price: sellPriceCents }),
+    };
+
+    const pnlCents = (sellPriceCents - order.entry_price) * order.count;
+    const entry = {
+      ts:            new Date().toISOString(),
+      ticker:        order.ticker,
+      side:          order.side,
+      price:         sellPriceCents,
+      count:         order.count,
+      action:        'sell',
+      reason,
+      entryPrice:    order.entry_price,
+      pnlCents,
+      clientOrderId,
+      status:        'pending',
+      error:         null,
+    };
+
+    try {
+      const res = await fetch(`${REST_BASE}/portfolio/orders`, {
+        method:  'POST',
+        headers: authHeaders(this.privateKey, this.apiKeyId, ORDER_PATH),
+        body:    JSON.stringify(body),
+      });
+      const data = await res.json();
+
+      if (!res.ok) {
+        entry.status = 'failed';
+        entry.error  = data?.error?.message ?? JSON.stringify(data);
+        console.error(`[auto-trader] ❌ Failed to close ${order.ticker}: ${entry.error}`);
+      } else {
+        entry.status = 'closed_early';
+        closeAutoOrderEarly(order.client_order_id, {
+          pnlCents,
+          soldPrice: sellPriceCents,
+          ts: new Date().toISOString(),
+        });
+        console.log(
+          `[auto-trader] 🛑 ${reason} closed ${order.ticker} ${order.side.toUpperCase()} ` +
+          `entry ${order.entry_price}¢ → sold ${sellPriceCents}¢ = ${pnlCents >= 0 ? '+' : ''}${pnlCents}c`
+        );
+      }
+    } catch (err) {
+      entry.status = 'error';
+      entry.error  = err.message;
+      console.error(`[auto-trader] close error ${order.ticker}: ${err.message}`);
+    }
+
+    this.log.push(entry);
+    if (this.log.length > 500) this.log.shift();
+    notifyTrade(entry).catch((err) => console.error('[notify] unhandled error', err.message));
   }
 }
