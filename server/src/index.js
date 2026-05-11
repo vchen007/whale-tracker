@@ -19,10 +19,13 @@ const API_KEY_ID  = process.env.KALSHI_API_KEY_ID;
 const PRIVATE_KEY_PATH = process.env.KALSHI_PRIVATE_KEY_PATH;
 const THIRTY_DAYS_MS = 30 * 24 * 60 * 60 * 1000;
 const MIN_NOTIONAL_DOLLARS = Number(process.env.MIN_NOTIONAL_DOLLARS ?? 10_000);
-// Trades at >=99¢ on the side they bought are zero-EV settlement transfers
-// (closing positions, wash trades, OTC) — not real conviction signals.
-// Skip them to keep the dashboard clean.
-const ZERO_EV_PRICE_CENTS = 99;
+// Trades at >=95¢ on the side they bought are usually settlement transfers
+// (closing positions, wash trades, OTC) — the upside is too small (≤5¢ max)
+// minus fees, so almost never a real conviction signal. Skip them.
+// Originally 99¢, tightened to 95¢ after May 11 analysis showed the 98¢
+// "ATL Braves" Polymarket trade was a wash/settlement that polluted the
+// cross-venue arbitrage comparison.
+const ZERO_EV_PRICE_CENTS = 95;
 
 function tradePriceCents(trade) {
   return trade.side === 'yes' ? (trade.yesPrice ?? 0) : (trade.noPrice ?? 0);
