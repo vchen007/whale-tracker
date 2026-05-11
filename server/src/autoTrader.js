@@ -56,7 +56,8 @@ export class AutoTrader {
    * @param {number}  [opts.minNotional]        min trade notional in dollars to copy (default 20000)
    * @param {number}  [opts.minNetProfit]       min net profit if win, in dollars (default 0.02 = 2¢)
    * @param {boolean} [opts.stopLossEnabled]    enable stop-loss closing (default true)
-   * @param {number}  [opts.stopLossCents]      close position if current bid ≤ entry − N (default 20¢)
+   * @param {number}  [opts.stopLossPercent]    close if bid drops >= N% of entry price
+   *                                            (e.g. 35 → entry 80¢ closes when bid ≤ 52¢). Default 35.
    */
   constructor({
     privateKey, apiKeyId,
@@ -66,7 +67,7 @@ export class AutoTrader {
     minNotional = 20_000,
     minNetProfit = 0.02,
     stopLossEnabled = true,
-    stopLossCents = 20,
+    stopLossPercent = 35,
   }) {
     this.privateKey      = privateKey;
     this.apiKeyId        = apiKeyId;
@@ -76,7 +77,7 @@ export class AutoTrader {
     this.minNotional     = minNotional;
     this.minNetProfit    = minNetProfit;
     this.stopLossEnabled = stopLossEnabled;
-    this.stopLossCents   = stopLossCents;
+    this.stopLossPercent = stopLossPercent;
 
     // Simple in-memory log of recent orders (capped at 500)
     this.log = [];
@@ -95,7 +96,7 @@ export class AutoTrader {
       minNotional:     this.minNotional,
       minNetProfit:    this.minNetProfit,
       stopLossEnabled: this.stopLossEnabled,
-      stopLossCents:   this.stopLossCents,
+      stopLossPercent: this.stopLossPercent,
       recentOrders:    this.log.slice(-20),
     };
   }
@@ -271,13 +272,15 @@ export class AutoTrader {
 
   /**
    * Stop-loss watchdog. Poll current market prices for open positions and
-   * close any where the side-we-hold's current bid has fallen at least
-   * stopLossCents below our entry price. Caps tail losses on bets that move
-   * heavily against us before settlement.
+   * close any where the current bid (on the side we hold) has dropped by
+   * stopLossPercent% or more relative to our entry price.
    *
-   * Sells at (current bid − 1¢) to guarantee fill (eats a 1¢ slippage cost
-   * to ensure we actually escape the position).
+   * Examples (stopLossPercent = 35):
+   *   entry 80¢  → trigger when bid ≤ 52¢ (drop of 28¢ = 35% of 80)
+   *   entry 50¢  → trigger when bid ≤ 32.5¢ (drop of 17.5¢ = 35% of 50)
+   *   entry 90¢  → trigger when bid ≤ 58.5¢ (drop of 31.5¢ = 35% of 90)
    *
+   * Sells at (current bid − 1¢) to guarantee fill.
    * Should be called periodically (e.g., every 3 minutes).
    */
   async checkStopLosses() {
@@ -285,6 +288,7 @@ export class AutoTrader {
     const open = getOpenAutoOrders();
     if (open.length === 0) return { checked: 0, closed: 0 };
 
+    const dropFraction = this.stopLossPercent / 100;
     let closedCount = 0;
     for (const o of open) {
       try {
@@ -300,9 +304,9 @@ export class AutoTrader {
         if (!bidDollars || bidDollars <= 0) continue;
         const currentBidCents = Math.round(bidDollars * 100);
 
-        // Has the market dropped by stopLossCents or more from our entry?
-        const lossSoFar = o.entry_price - currentBidCents;
-        if (lossSoFar < this.stopLossCents) continue;
+        // Trigger threshold: drop ≥ stopLossPercent% of entry
+        const triggerBidCents = o.entry_price * (1 - dropFraction);
+        if (currentBidCents > triggerBidCents) continue;
 
         // Trigger! Place a SELL at (bid - 1c) to ensure fill
         const sellPrice = Math.max(1, currentBidCents - 1);

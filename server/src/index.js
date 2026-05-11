@@ -97,7 +97,7 @@ const autoTrader = new AutoTrader({
   minNotional:     Number(process.env.AUTO_TRADER_MIN_NOTIONAL ?? 20_000),
   minNetProfit:    Number(process.env.AUTO_TRADER_MIN_NET_PROFIT ?? 0.02),
   stopLossEnabled: process.env.AUTO_TRADER_STOP_LOSS_ENABLED !== 'false',
-  stopLossCents:   Number(process.env.AUTO_TRADER_STOP_LOSS_CENTS ?? 20),
+  stopLossPercent: Number(process.env.AUTO_TRADER_STOP_LOSS_PERCENT ?? 35),
 });
 
 // ── Category map (ticker → human-readable category) ──────────────────────────
