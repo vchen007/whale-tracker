@@ -1,4 +1,70 @@
+import { useState, useRef, useEffect, useCallback } from 'react';
+
+const COLS = ['#', 'MARKET', 'TITLE', 'PICK', 'CAT', 'TRADES', 'YES VOL', 'NO VOL', 'TOTAL', 'YES / NO'];
+
+const DEFAULT_WIDTHS = {
+  '#':        48,
+  MARKET:    260,
+  TITLE:     280,
+  PICK:      160,
+  CAT:       128,
+  TRADES:     80,
+  'YES VOL': 100,
+  'NO VOL':  100,
+  TOTAL:     100,
+  'YES / NO': 160,
+};
+
+const STORAGE_KEY = 'whaleTrackerTopMktWidths';
+const MIN_COL_WIDTH = 40;
+
+function useColumnResize() {
+  const [widths, setWidths] = useState(() => {
+    try {
+      const saved = localStorage.getItem(STORAGE_KEY);
+      return saved ? { ...DEFAULT_WIDTHS, ...JSON.parse(saved) } : DEFAULT_WIDTHS;
+    } catch {
+      return DEFAULT_WIDTHS;
+    }
+  });
+
+  const widthsRef = useRef(widths);
+  useEffect(() => { widthsRef.current = widths; }, [widths]);
+
+  const onMouseDown = useCallback((col, e) => {
+    e.preventDefault();
+    const startX     = e.clientX;
+    const startWidth = widthsRef.current[col];
+
+    function onMouseMove(e) {
+      const next = Math.max(MIN_COL_WIDTH, startWidth + (e.clientX - startX));
+      setWidths((prev) => ({ ...prev, [col]: next }));
+    }
+
+    function onMouseUp() {
+      setWidths((prev) => {
+        localStorage.setItem(STORAGE_KEY, JSON.stringify(prev));
+        return prev;
+      });
+      document.removeEventListener('mousemove', onMouseMove);
+      document.removeEventListener('mouseup', onMouseUp);
+    }
+
+    document.addEventListener('mousemove', onMouseMove);
+    document.addEventListener('mouseup', onMouseUp);
+  }, []);
+
+  const resetWidths = useCallback(() => {
+    localStorage.removeItem(STORAGE_KEY);
+    setWidths(DEFAULT_WIDTHS);
+  }, []);
+
+  return { widths, onMouseDown, resetWidths };
+}
+
 export default function TopMarketsTable({ markets }) {
+  const { widths, onMouseDown, resetWidths } = useColumnResize();
+
   if (markets.length === 0) {
     return (
       <div className="table-wrapper">
@@ -14,17 +80,24 @@ export default function TopMarketsTable({ markets }) {
   return (
     <div className="table-wrapper">
       <table className="trade-table top-markets-table">
+        <colgroup>
+          {COLS.map((col) => (
+            <col key={col} style={{ width: widths[col] + 'px' }} />
+          ))}
+        </colgroup>
         <thead>
           <tr>
-            <th className="th">#</th>
-            <th className="th">MARKET</th>
-            <th className="th">TITLE</th>
-            <th className="th">CAT</th>
-            <th className="th">TRADES</th>
-            <th className="th">YES VOL</th>
-            <th className="th">NO VOL</th>
-            <th className="th">TOTAL</th>
-            <th className="th">YES / NO</th>
+            {COLS.map((col) => (
+              <th key={col} className="th">
+                {col}
+                <span
+                  className="th-resize-handle"
+                  onMouseDown={(e) => onMouseDown(col, e)}
+                  onDoubleClick={resetWidths}
+                  title="Drag to resize · Double-click to reset all"
+                />
+              </th>
+            ))}
           </tr>
         </thead>
         <tbody>
@@ -39,7 +112,14 @@ export default function TopMarketsTable({ markets }) {
                 <td className="td td--ticker" title={m.ticker}>{m.ticker}</td>
                 <td className="td td--title">
                   {m.title || '—'}
-                  {m.yesSub && <span className="td--outcome"> ▸ {m.yesSub}</span>}
+                </td>
+                <td className="td td--pick">
+                  {(() => {
+                    const yes = Number(m.yesNotional ?? 0);
+                    const no  = Number(m.noNotional  ?? 0);
+                    const pick = yes >= no ? m.yesSub : m.noSub;
+                    return pick ?? '—';
+                  })()}
                 </td>
                 <td className="td td--cat">{m.category}</td>
                 <td className="td td--mono">{m.tradeCount.toLocaleString()}</td>

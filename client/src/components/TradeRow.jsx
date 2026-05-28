@@ -61,14 +61,13 @@ const TradeRow = memo(function TradeRow({ trade }) {
       </td>
       <td className="td td--title" title={trade.title ?? ''}>
         {trade.title ?? '—'}
+      </td>
+      <td className="td td--pick">
         {(() => {
-          // Show which side the bet is FOR. For Polymarket each ticker is
-          // per-outcome so use the outcome name. For Kalshi the ticker is
-          // per-question so show yes_sub when betting YES, no_sub when NO.
           const pick = trade.source === 'polymarket'
             ? trade.outcome
             : (trade.side === 'yes' ? trade.yesSub : trade.noSub);
-          return pick ? <span className="td--outcome"> ▸ {pick}</span> : null;
+          return pick ?? '—';
         })()}
       </td>
       <td className="td td--cat">{trade.category}</td>
