@@ -85,9 +85,40 @@ html, body { height: 100%; background: var(--bg); color: var(--text); font-famil
 .top-markets-table .th:nth-child(6) { width: 7rem;  }     /* YES VOL */
 .top-markets-table .th:nth-child(7) { width: 7rem;  }     /* NO VOL */
 .top-markets-table .th:nth-child(8) { width: 7rem;  }     /* TOTAL */
-.top-markets-table .th:nth-child(9) { width: 5rem;  }     /* YES% */
+.top-markets-table .th:nth-child(9) { width: 10rem; }     /* YES / NO */
 .td--yes-vol { color: var(--green); }
 .td--no-vol  { color: var(--red); }
+
+/* ── Percentage bar ─────────────────────────────────────────────────────── */
+.td--pct-bar { padding: 0.25rem 0.5rem; }
+.pct-bar {
+  display: flex;
+  height: 1.2rem;
+  border-radius: 3px;
+  overflow: hidden;
+  font-family: var(--font-mono);
+  font-size: 0.6rem;
+  font-weight: 700;
+  letter-spacing: 0.02em;
+}
+.pct-bar__yes {
+  background: var(--green-dim);
+  color: var(--green);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 0;
+  transition: width 0.3s ease;
+}
+.pct-bar__no {
+  background: var(--red-dim);
+  color: var(--red);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 0;
+  transition: width 0.3s ease;
+}
 
 /* ── Refresh button ─────────────────────────────────────────────────────── */
 .refresh-btn {

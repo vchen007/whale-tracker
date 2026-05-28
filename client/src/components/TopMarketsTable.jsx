@@ -24,7 +24,7 @@ export default function TopMarketsTable({ markets }) {
             <th className="th">YES VOL</th>
             <th className="th">NO VOL</th>
             <th className="th">TOTAL</th>
-            <th className="th">YES%</th>
+            <th className="th">YES / NO</th>
           </tr>
         </thead>
         <tbody>
@@ -46,7 +46,16 @@ export default function TopMarketsTable({ markets }) {
                 <td className="td td--notional td--yes-vol">{fmtNotional(yes)}</td>
                 <td className="td td--notional td--no-vol">{fmtNotional(no)}</td>
                 <td className="td td--notional">{fmtNotional(total)}</td>
-                <td className="td td--mono">{yesPct}%</td>
+                <td className="td td--pct-bar">
+                  <div className="pct-bar">
+                    <div className="pct-bar__yes" style={{ width: `${yesPct}%` }}>
+                      {yesPct >= 20 ? `${yesPct}%` : ''}
+                    </div>
+                    <div className="pct-bar__no" style={{ width: `${100 - yesPct}%` }}>
+                      {(100 - yesPct) >= 20 ? `${100 - yesPct}%` : ''}
+                    </div>
+                  </div>
+                </td>
               </tr>
             );
           })}
