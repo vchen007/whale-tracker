@@ -5,6 +5,7 @@ client/dist/
 .env
 *.pem
 *.key
+auth_token*.txt
 trades.db
 trades.db-shm
 trades.db-wal

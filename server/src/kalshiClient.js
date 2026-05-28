@@ -1,7 +1,8 @@
 import WebSocket from 'ws';
 import { buildAuthParams } from './auth.js';
 
-const RECONNECT_DELAY_MS = 5_000;
+const RECONNECT_BASE_MS  = 5_000;
+const RECONNECT_MAX_MS   = 5 * 60 * 1000; // cap at 5 minutes
 
 /**
  * Map Kalshi ticker prefix → canonical Kalshi category. Used as a fallback
@@ -152,6 +153,7 @@ export class KalshiClient {
     this._ws = null;
     this._msgId = 1;
     this._destroyed = false;
+    this._reconnectAttempts = 0;
   }
 
   connect() {
@@ -172,6 +174,7 @@ export class KalshiClient {
     this._ws = ws;
 
     ws.on('open', () => {
+      this._reconnectAttempts = 0;
       this.onStatus('subscribing');
       this._send('subscribe', { channels: ['trade'] });
     });
@@ -221,8 +224,10 @@ export class KalshiClient {
 
     ws.on('close', (code) => {
       if (this._destroyed) return;
-      this.onStatus(`disconnected (${code}) – reconnecting in ${RECONNECT_DELAY_MS / 1000}s`);
-      setTimeout(() => this.connect(), RECONNECT_DELAY_MS);
+      this._reconnectAttempts++;
+      const delay = Math.min(RECONNECT_BASE_MS * 2 ** (this._reconnectAttempts - 1), RECONNECT_MAX_MS);
+      this.onStatus(`disconnected (${code}) – reconnecting in ${Math.round(delay / 1000)}s`);
+      setTimeout(() => this.connect(), delay);
     });
   }
 

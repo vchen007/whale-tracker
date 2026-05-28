@@ -1,7 +1,8 @@
 import { useEffect, useRef, useCallback, useState } from 'react';
 
-const WS_URL          = 'ws://localhost:3001/ws';
-const REST_URL        = 'http://localhost:3001/trades';
+const API_BASE = import.meta.env.VITE_API_URL || 'http://localhost:3001';
+const WS_URL   = API_BASE.replace(/^http/, 'ws') + '/ws';
+const REST_URL = API_BASE + '/trades';
 const RECONNECT_DELAY_MS  = 3_000;
 const AUTO_REFRESH_MS     = 60_000; // re-fetch history every 60 seconds
 const MAX_TRADES = 50_000;

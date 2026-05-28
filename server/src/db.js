@@ -112,7 +112,9 @@ export function getAutoOrderSummary() {
     FROM auto_orders
   `).get();
   const recent = db.prepare(`
-    SELECT * FROM auto_orders ORDER BY placed_ts DESC LIMIT 50
+    SELECT ticker, side, entry_price, count, est_fee,
+           placed_ts, status, outcome, pnl_cents, settled_ts
+    FROM auto_orders ORDER BY placed_ts DESC LIMIT 50
   `).all();
   return { ...totals, recent };
 }
@@ -151,11 +153,15 @@ export function bulkInsert(trades) {
   run(trades.map(tradeRow));
 }
 
+// Allowlisted ORDER BY clauses — never interpolate user input directly into SQL
+const ORDER_BY = {
+  notional: `CASE t.side WHEN 'yes' THEN t.count * COALESCE(t.yes_price, 0) ELSE t.count * COALESCE(t.no_price, 0) END DESC`,
+  time:     `t.ts_ms DESC`,
+};
+
 export function getTradesSince(sinceMs, limit = 10_000, minNotional = 0, sortBy = 'time') {
   const minNotionalCents = minNotional * 100;
-  const order = sortBy === 'notional'
-    ? `CASE t.side WHEN 'yes' THEN t.count * COALESCE(t.yes_price, 0) ELSE t.count * COALESCE(t.no_price, 0) END DESC`
-    : `t.ts_ms DESC`;
+  const order = ORDER_BY[sortBy] ?? ORDER_BY.time;
   return db.prepare(`
     SELECT t.id, t.trade_id AS tradeId, t.ticker,
            COALESCE(m.category, t.category) AS category,
@@ -281,10 +287,11 @@ export function getTickerMetaMap() {
 // Tickers traded recently — used by the metadata refresher to keep
 // close_time / event_start_time current as Kalshi updates them.
 export function getRecentlyActiveTickers(hoursBack = 48) {
+  const cutoffMs = Date.now() - Math.floor(hoursBack) * 3600_000;
   return db.prepare(`
     SELECT DISTINCT ticker FROM trades
-    WHERE ts_ms >= strftime('%s','now','-${Math.floor(hoursBack)} hours') * 1000
-  `).all().map((r) => r.ticker);
+    WHERE ts_ms >= ?
+  `).all(cutoffMs).map((r) => r.ticker);
 }
 
 export function refreshMarketMeta(ticker, closeTime, eventStartTime) {

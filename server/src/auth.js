@@ -3,13 +3,19 @@ import { readFileSync } from 'fs';
 import { resolve } from 'path';
 
 /**
- * Load and parse the RSA private key from disk.
+ * Load and parse the RSA private key.
+ *
+ * Checks KALSHI_PRIVATE_KEY env var first (raw PEM content — for cloud
+ * deployments where secrets are injected as env vars). Falls back to
+ * reading from disk via keyPath (for local dev).
+ *
  * Accepts PKCS#1 (BEGIN RSA PRIVATE KEY) or PKCS#8 (BEGIN PRIVATE KEY).
  */
 export function loadPrivateKey(keyPath) {
-  const absPath = resolve(keyPath);
-  const pem = readFileSync(absPath, 'utf8');
-  // Parse via createPrivateKey so Node.js normalises the format internally.
+  const envPem = process.env.KALSHI_PRIVATE_KEY;
+  const pem = envPem
+    ? envPem.replace(/\\n/g, '\n')   // env vars often escape newlines
+    : readFileSync(resolve(keyPath), 'utf8');
   return createPrivateKey({ key: pem, format: 'pem' });
 }
 

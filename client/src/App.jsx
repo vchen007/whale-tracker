@@ -15,7 +15,8 @@ const TIME_RANGES = [
   { label: 'ALL',  cutoff: () => null },
 ];
 
-const TOP_MARKETS_URL = 'http://localhost:3001/markets/top';
+const API_BASE = import.meta.env.VITE_API_URL || 'http://localhost:3001';
+const TOP_MARKETS_URL = API_BASE + '/markets/top';
 
 export default function App() {
   const [tab,       setTab]       = useState('trades');

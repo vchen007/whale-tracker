@@ -4,6 +4,7 @@ import { fileURLToPath } from 'url';
 config({ path: resolve(dirname(fileURLToPath(import.meta.url)), '../../.env') });
 import Fastify from 'fastify';
 import fastifyWebsocket from '@fastify/websocket';
+import rateLimit from '@fastify/rate-limit';
 import { loadPrivateKey } from './auth.js';
 import { KalshiClient } from './kalshiClient.js';
 import { AutoTrader } from './autoTrader.js';
@@ -11,6 +12,7 @@ import { initDb, insertTrade, bulkInsert, getTradesSince, getTopMarkets, getOlde
 import { fetchTradeHistory, fetchAllMarketTitles, fetchCategories, fetchEventData, fetchEventCategoryMap, fetchTitlesByTickers } from './kalshiRest.js';
 import { fetchPolymarketTrades } from './polymarketRest.js';
 import { startSchedulePoller, findKalshiGameStart, findPolymarketGameStart } from './sportsApi.js';
+import authMiddleware from './authMiddleware.js';
 
 // ── Config ────────────────────────────────────────────────────────────────────
 
@@ -94,10 +96,18 @@ const autoTrader = new AutoTrader({
   enabled:         process.env.AUTO_TRADER_ENABLED !== 'false',
   category:        process.env.AUTO_TRADER_CATEGORY ?? 'Sports',
   count:           Number(process.env.AUTO_TRADER_COUNT ?? 1),
-  minNotional:     Number(process.env.AUTO_TRADER_MIN_NOTIONAL ?? 20_000),
+  minNotional:     Number(process.env.AUTO_TRADER_MIN_NOTIONAL ?? 25_000),
   minNetProfit:    Number(process.env.AUTO_TRADER_MIN_NET_PROFIT ?? 0.02),
   stopLossEnabled: process.env.AUTO_TRADER_STOP_LOSS_ENABLED !== 'false',
-  stopLossPercent: Number(process.env.AUTO_TRADER_STOP_LOSS_PERCENT ?? 35),
+  stopLossPercent: Number(process.env.AUTO_TRADER_STOP_LOSS_PERCENT ?? 50),
+  // Comma-separated list overrides the default blocked-prefix set, e.g.:
+  //   AUTO_TRADER_BLOCKED_PREFIXES=KXNBASPREAD,KXIPL,KXUFCFIGHT
+  ...(process.env.AUTO_TRADER_BLOCKED_PREFIXES
+    ? { blockedPrefixes: process.env.AUTO_TRADER_BLOCKED_PREFIXES.split(',').map((s) => s.trim()) }
+    : {}),
+  minPriceCents:   Number(process.env.AUTO_TRADER_MIN_PRICE_CENTS ?? 70),
+  maxPriceCents:   Number(process.env.AUTO_TRADER_MAX_PRICE_CENTS ?? 84),
+  dedupeByEvent:   process.env.AUTO_TRADER_DEDUPE_BY_EVENT !== 'false',
 });
 
 // ── Category map (ticker → human-readable category) ──────────────────────────
@@ -110,6 +120,12 @@ const marketMetaMap = getTickerMetaMap();
 
 /** @type {Set<import('ws').WebSocket>} */
 const browserClients = new Set();
+
+// WebSocket connection limits
+const MAX_WS_TOTAL  = 50;
+const MAX_WS_PER_IP = 5;
+/** @type {Map<string, number>} */
+const wsPerIp = new Map();
 
 let kalshiStatus = 'idle';
 
@@ -160,59 +176,124 @@ function broadcast(payload) {
 
 // ── Fastify ───────────────────────────────────────────────────────────────────
 
-const app = Fastify({ logger: false });
+const app = Fastify({ logger: false, trustProxy: true });
 await app.register(fastifyWebsocket);
+await app.register(authMiddleware);
+await app.register(rateLimit, {
+  max: 100,
+  timeWindow: 60_000,             // 100 req/min global default
+  keyGenerator: (req) => req.ip,
+});
 
-// CORS for local dev
+// CORS — restrict to known origins
+const CORS_ORIGINS = new Set(
+  (process.env.CORS_ORIGINS ?? 'http://localhost:5173').split(',').map((s) => s.trim()),
+);
 app.addHook('onRequest', (req, reply, done) => {
-  reply.header('Access-Control-Allow-Origin', '*');
+  const origin = req.headers.origin;
+  if (origin && CORS_ORIGINS.has(origin)) {
+    reply.header('Access-Control-Allow-Origin', origin);
+    reply.header('Access-Control-Allow-Methods', 'GET, POST, OPTIONS');
+    reply.header('Access-Control-Allow-Headers', 'Authorization, Content-Type');
+  }
+  reply.header('Vary', 'Origin');
+  // Handle preflight
+  if (req.method === 'OPTIONS') {
+    reply.code(204).send();
+    return;
+  }
   done();
 });
 
 // Live WebSocket feed
-app.get('/ws', { websocket: true }, (socket) => {
+app.get('/ws', { websocket: true }, (socket, req) => {
+  const ip = req.ip ?? req.socket?.remoteAddress ?? 'unknown';
+
+  // Enforce connection limits
+  if (browserClients.size >= MAX_WS_TOTAL) {
+    socket.close(1008, 'too many connections');
+    return;
+  }
+  const ipCount = wsPerIp.get(ip) ?? 0;
+  if (ipCount >= MAX_WS_PER_IP) {
+    socket.close(1008, 'too many connections from this IP');
+    return;
+  }
+
   browserClients.add(socket);
-  console.log(`[ws] client connected (total: ${browserClients.size})`);
+  wsPerIp.set(ip, ipCount + 1);
+  console.log(`[ws] client connected from ${ip} (total: ${browserClients.size})`);
   socket.send(JSON.stringify({ type: 'status', data: kalshiStatus }));
-  socket.on('close', () => {
+
+  function cleanup() {
     browserClients.delete(socket);
+    const current = wsPerIp.get(ip) ?? 1;
+    if (current <= 1) wsPerIp.delete(ip);
+    else wsPerIp.set(ip, current - 1);
+  }
+
+  socket.on('close', () => {
+    cleanup();
     console.log(`[ws] client disconnected (total: ${browserClients.size})`);
   });
   socket.on('error', (err) => {
     console.error('[ws] client error', err.message);
-    browserClients.delete(socket);
+    cleanup();
   });
 });
 
 // Historical trades REST endpoint
-app.get('/trades', async (req) => {
-  const sinceMs     = req.query.since       ? Number(req.query.since)       : thirtyDaysAgo;
-  const minNotional = req.query.minNotional ? Number(req.query.minNotional) : 0;
-  const limit       = req.query.limit       ? Number(req.query.limit)       : 10_000;
-  const sortBy      = req.query.sortBy === 'notional' ? 'notional' : 'time';
+app.get('/trades', {
+  schema: {
+    querystring: {
+      type: 'object',
+      properties: {
+        since:       { type: 'number', minimum: 0 },
+        minNotional: { type: 'number', minimum: 0 },
+        limit:       { type: 'integer', minimum: 1, maximum: 10_000 },
+        sortBy:      { type: 'string', enum: ['time', 'notional'] },
+      },
+    },
+  },
+}, async (req) => {
+  const sinceMs     = req.query.since       ?? thirtyDaysAgo;
+  const minNotional = req.query.minNotional ?? 0;
+  const limit       = req.query.limit       ?? 10_000;
+  const sortBy      = req.query.sortBy      ?? 'time';
   return getTradesSince(sinceMs, limit, minNotional, sortBy);
 });
 
 app.get('/health', async () => ({ ok: true, kalshiStatus, clients: browserClients.size }));
 
-app.get('/markets/top', async (req) => {
-  const sinceMs = req.query.since ? Number(req.query.since) : thirtyDaysAgo;
-  const limit   = req.query.limit ? Number(req.query.limit) : 100;
+app.get('/markets/top', {
+  schema: {
+    querystring: {
+      type: 'object',
+      properties: {
+        since: { type: 'number', minimum: 0 },
+        limit: { type: 'integer', minimum: 1, maximum: 1000 },
+      },
+    },
+  },
+}, async (req) => {
+  const sinceMs = req.query.since ?? thirtyDaysAgo;
+  const limit   = req.query.limit ?? 100;
   return getTopMarkets(sinceMs, limit);
 });
 
 // ── Auto-trader endpoints ─────────────────────────────────────────────────────
 
-app.get('/auto-trader/status', async () => autoTrader.status());
+app.get('/auto-trader/status', { preHandler: [app.authenticate] }, async () => autoTrader.status());
 
-app.post('/auto-trader/enable',  async () => { autoTrader.enable();  return autoTrader.status(); });
-app.post('/auto-trader/disable', async () => { autoTrader.disable(); return autoTrader.status(); });
+const autoTraderRateLimit = { config: { rateLimit: { max: 10, timeWindow: 60_000 } } };
+app.post('/auto-trader/enable',  { preHandler: [app.authenticate], ...autoTraderRateLimit }, async () => { autoTrader.enable();  return autoTrader.status(); });
+app.post('/auto-trader/disable', { preHandler: [app.authenticate], ...autoTraderRateLimit }, async () => { autoTrader.disable(); return autoTrader.status(); });
 
 // P&L summary: total wins/losses/realized cents + recent orders with outcomes
-app.get('/auto-trader/pnl', async () => getAutoOrderSummary());
+app.get('/auto-trader/pnl', { preHandler: [app.authenticate] }, async () => getAutoOrderSummary());
 
 // Trigger settlement check on demand
-app.post('/auto-trader/settle', async () => autoTrader.checkSettlements());
+app.post('/auto-trader/settle', { preHandler: [app.authenticate], ...autoTraderRateLimit }, async () => autoTrader.checkSettlements());
 
 // ── Categories ────────────────────────────────────────────────────────────────
 

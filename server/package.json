@@ -9,6 +9,7 @@
     "dev": "node --max-old-space-size=2048 --watch src/index.js"
   },
   "dependencies": {
+    "@fastify/rate-limit": "^10.3.0",
     "@fastify/websocket": "^11.2.0",
     "better-sqlite3": "^12.8.0",
     "dotenv": "^16.4.5",
