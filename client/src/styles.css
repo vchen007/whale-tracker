@@ -49,10 +49,11 @@ html, body { height: 100%; background: var(--bg); color: var(--text); font-famil
 
 .app-title {
   font-family: var(--font-mono);
-  font-size: 0.85rem;
+  font-size: 1.6rem;
   font-weight: 700;
-  letter-spacing: 0.08em;
+  letter-spacing: 0.06em;
   color: var(--cyan);
+  white-space: nowrap;
 }
 
 /* ── Tabs ────────────────────────────────────────────────────────────────── */
@@ -77,12 +78,13 @@ html, body { height: 100%; background: var(--bg); color: var(--text); font-famil
 .tab-btn--active { color: var(--cyan); border-bottom-color: var(--cyan); }
 
 /* ── Header brand / byline ───────────────────────────────────────────────── */
-.app-brand { display: flex; flex-direction: column; gap: 0.1rem; }
+.app-brand { display: flex; flex-direction: row; align-items: baseline; gap: 0.6rem; white-space: nowrap; }
 .app-byline {
   font-family: var(--font-mono);
-  font-size: 0.6rem;
+  font-size: 0.95rem;
   letter-spacing: 0.05em;
   color: var(--muted);
+  white-space: nowrap;
 }
 .app-byline a {
   color: var(--cyan);
