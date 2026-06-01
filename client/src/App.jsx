@@ -23,7 +23,7 @@ export default function App() {
   const [minSize,   setMinSize]   = useState('10000');
   const [category,  setCategory]  = useState('');
   const [side,      setSide]      = useState('');
-  const [timeRange, setTimeRange] = useState('30D');
+  const [timeRange, setTimeRange] = useState('TODAY');
   const [sortBy,    setSortBy]    = useState('notional');
 
   const { trades, status, connected, refresh, refreshing } = useWebSocket(
