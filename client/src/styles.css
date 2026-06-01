@@ -76,25 +76,21 @@ html, body { height: 100%; background: var(--bg); color: var(--text); font-famil
 .tab-btn:hover { color: var(--text); }
 .tab-btn--active { color: var(--cyan); border-bottom-color: var(--cyan); }
 
-/* ── Footer ──────────────────────────────────────────────────────────────── */
-.app-footer {
-  flex-shrink: 0;
-  padding: 0.4rem 1rem;
-  border-top: 1px solid var(--border);
-  background: var(--bg-card);
+/* ── Header brand / byline ───────────────────────────────────────────────── */
+.app-brand { display: flex; flex-direction: column; gap: 0.1rem; }
+.app-byline {
   font-family: var(--font-mono);
-  font-size: 0.7rem;
+  font-size: 0.6rem;
   letter-spacing: 0.05em;
   color: var(--muted);
-  text-align: center;
 }
-.app-footer__link {
+.app-byline a {
   color: var(--cyan);
   text-decoration: none;
   border-bottom: 1px solid transparent;
   transition: border-color 0.15s;
 }
-.app-footer__link:hover { border-bottom-color: var(--cyan); }
+.app-byline a:hover { border-bottom-color: var(--cyan); }
 
 /* ── Top markets table ───────────────────────────────────────────────────── */
 .top-markets-table .th:nth-child(1) { width: 3rem;  }     /* # */

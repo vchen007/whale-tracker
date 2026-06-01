@@ -80,7 +80,13 @@ export default function App() {
   return (
     <div className="app">
       <header className="app-header">
-        <span className="app-title">🐳 KALSHI WHALE TRACKER</span>
+        <div className="app-brand">
+          <span className="app-title">🐳 PREDICTION MARKET WHALE TRACKER</span>
+          <span className="app-byline">
+            created by{' '}
+            <a href="https://vchen007.github.io/portfolio/" target="_blank" rel="noopener noreferrer">Victor Chen</a>
+          </span>
+        </div>
         <button className="refresh-btn" onClick={handleRefresh} disabled={refreshing || topMarketsLoading}>
           {(refreshing || topMarketsLoading) ? '↻ Refreshing…' : '↻ Refresh'}
         </button>
@@ -136,18 +142,6 @@ export default function App() {
           <TopMarketsTable markets={topMarkets} />
         </>
       )}
-
-      <footer className="app-footer">
-        Created by{' '}
-        <a
-          className="app-footer__link"
-          href="https://vchen007.github.io/portfolio/"
-          target="_blank"
-          rel="noopener noreferrer"
-        >
-          Victor Chen
-        </a>
-      </footer>
     </div>
   );
 }
