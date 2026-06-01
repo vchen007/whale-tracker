@@ -57,17 +57,37 @@ export class AutoTrader {
    * @param {number}  [opts.minNetProfit]       min net profit if win, in dollars (default 0.02 = 2¢)
    * @param {boolean} [opts.stopLossEnabled]    enable stop-loss closing (default true)
    * @param {number}  [opts.stopLossPercent]    close if bid drops >= N% of entry price
-   *                                            (e.g. 35 → entry 80¢ closes when bid ≤ 52¢). Default 35.
+   *                                            (e.g. 70 → entry 80¢ closes when bid ≤ 24¢). Default 70.
+   * @param {string[]} [opts.blockedPrefixes]   ticker prefixes to skip — derived from losing subcategories.
+   *                                            Default: NBA spreads (20% win), IPL (50%), Tennis (50%), UFC (0%).
+   * @param {number}  [opts.minPriceCents]      min entry price in cents (default 70 — sweet-spot floor).
+   * @param {number}  [opts.maxPriceCents]      max entry price in cents (default 84 — sweet-spot ceiling).
+   *                                            Set to 100 to disable the upper bound.
+   * @param {boolean} [opts.dedupeByEvent]      skip if we already hold an open position on the same event
+   *                                            (ticker minus its last dash-segment). Default true.
    */
   constructor({
     privateKey, apiKeyId,
     enabled = true,
     category = 'Sports',
     count = 1,
-    minNotional = 20_000,
+    minNotional = 25_000,
     minNetProfit = 0.02,
     stopLossEnabled = true,
-    stopLossPercent = 35,
+    stopLossPercent = 70,
+    blockedPrefixes = [
+      'KXNBASPREAD',        // 20% win rate
+      'KXIPL',              // 50% win rate (coin-flip)
+      'KXATPMATCH',         // 50% win rate (coin-flip)
+      'KXWTAMATCH',         // 50% win rate (coin-flip)
+      'KXITFMATCH',         // insufficient data, tennis generally weak
+      'KXUFCFIGHT',         // 0% win rate
+      'KXMVECROSSCATEGORY', // multi-leg combos (cross-category)
+      'KXMVESPORTS',        // multi-leg combos (sports)
+    ],
+    minPriceCents = 65,
+    maxPriceCents = 84,
+    dedupeByEvent = true,
   }) {
     this.privateKey      = privateKey;
     this.apiKeyId        = apiKeyId;
@@ -78,6 +98,10 @@ export class AutoTrader {
     this.minNetProfit    = minNetProfit;
     this.stopLossEnabled = stopLossEnabled;
     this.stopLossPercent = stopLossPercent;
+    this.blockedPrefixes = blockedPrefixes;
+    this.minPriceCents   = minPriceCents;
+    this.maxPriceCents   = maxPriceCents;
+    this.dedupeByEvent   = dedupeByEvent;
 
     // Simple in-memory log of recent orders (capped at 500)
     this.log = [];
@@ -97,6 +121,10 @@ export class AutoTrader {
       minNetProfit:    this.minNetProfit,
       stopLossEnabled: this.stopLossEnabled,
       stopLossPercent: this.stopLossPercent,
+      blockedPrefixes: this.blockedPrefixes,
+      minPriceCents:   this.minPriceCents,
+      maxPriceCents:   this.maxPriceCents,
+      dedupeByEvent:   this.dedupeByEvent,
       recentOrders:    this.log.slice(-20),
     };
   }
@@ -118,6 +146,24 @@ export class AutoTrader {
     const price = trade.side === 'yes' ? (trade.yesPrice ?? 0) : (trade.noPrice ?? 0);
     if (!price) return;
 
+    // Blocked subcategory gate (ticker-prefix based, catches IPL/tennis/spread/UFC)
+    if (this.blockedPrefixes.length > 0) {
+      const blocked = this.blockedPrefixes.find((pfx) => trade.ticker.startsWith(pfx));
+      if (blocked) {
+        console.log(`[auto-trader] skip ${trade.ticker} — blocked prefix ${blocked}`);
+        return;
+      }
+    }
+
+    // Entry price range gate (70-84¢ sweet spot by default)
+    if (price < this.minPriceCents || price > this.maxPriceCents) {
+      console.log(
+        `[auto-trader] skip ${trade.ticker} ${trade.side.toUpperCase()} @ ${price}¢ — ` +
+        `outside price range [${this.minPriceCents}¢, ${this.maxPriceCents}¢]`
+      );
+      return;
+    }
+
     // Notional gate
     const notional = (trade.count * price) / 100;
     if (notional < this.minNotional) return;
@@ -133,6 +179,22 @@ export class AutoTrader {
         `max net win = $${netProfit.toFixed(4)} (fee $${fee.toFixed(4)}) < $${this.minNetProfit.toFixed(2)} threshold`
       );
       return;
+    }
+
+    // Per-event conflict check: allow stacking on the same ticker, but block if
+    // we already hold a *different* ticker for this event (i.e. the opposing outcome —
+    // e.g. YES on TeamA when we already hold YES on TeamB for the same game).
+    if (this.dedupeByEvent) {
+      const eventTicker = trade.ticker.split('-').slice(0, -1).join('-');
+      const open = getOpenAutoOrders();
+      const conflicting = open.some((o) => {
+        const oEvent = o.ticker.split('-').slice(0, -1).join('-');
+        return oEvent === eventTicker && o.ticker !== trade.ticker;
+      });
+      if (conflicting) {
+        console.log(`[auto-trader] skip ${trade.ticker} — conflicts with existing position on event ${eventTicker}`);
+        return;
+      }
     }
 
     await this._placeOrder(trade, { fee, netProfit });
@@ -275,10 +337,10 @@ export class AutoTrader {
    * close any where the current bid (on the side we hold) has dropped by
    * stopLossPercent% or more relative to our entry price.
    *
-   * Examples (stopLossPercent = 35):
-   *   entry 80¢  → trigger when bid ≤ 52¢ (drop of 28¢ = 35% of 80)
-   *   entry 50¢  → trigger when bid ≤ 32.5¢ (drop of 17.5¢ = 35% of 50)
-   *   entry 90¢  → trigger when bid ≤ 58.5¢ (drop of 31.5¢ = 35% of 90)
+   * Examples (stopLossPercent = 70):
+   *   entry 80¢  → trigger when bid ≤ 24¢ (drop of 56¢ = 70% of 80)
+   *   entry 65¢  → trigger when bid ≤ 19.5¢ (drop of 45.5¢ = 70% of 65)
+   *   entry 84¢  → trigger when bid ≤ 25.2¢ (drop of 58.8¢ = 70% of 84)
    *
    * Sells at (current bid − 1¢) to guarantee fill.
    * Should be called periodically (e.g., every 3 minutes).

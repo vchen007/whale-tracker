@@ -14,3 +14,8 @@ trades.db-wal
 .claude/
 logs/
 *.pptx.png
+
+# P&L analysis / output artifacts — keep private
+PNL_ANALYSIS_*.md
+auto_trader_pnl_*.csv
+daily_summary.txt

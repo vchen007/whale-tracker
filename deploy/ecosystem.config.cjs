@@ -7,7 +7,7 @@
 //
 // Usage from the repo root:
 //   mkdir -p logs
-//   pm2 start deploy/ecosystem.production.cjs
+//   pm2 start deploy/ecosystem.config.cjs
 //   pm2 save && pm2 startup     # survive reboots
 
 const path = require('path');

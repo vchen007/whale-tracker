@@ -366,5 +366,21 @@ if __name__ == "__main__":
     result = fetch_and_analyze()
     largest = result["top_largest"][0]["notional"] if result["top_largest"] else 0
     print(f"Found {len(result['top_bets'])} best bets, top single trade: ${largest:,.0f}")
+
+    # Print summary to stdout for terminal use
+    print("\n=== TOP CONVICTION PLAYS ===")
+    for i, b in enumerate(result["top_bets"][:10], 1):
+        pick = b["yes_sub"] if b["winner_side"] == "YES" else b["no_sub"]
+        pick = pick or b["winner_side"]
+        n = b["combined"]
+        nstr = f"${n/1_000_000:.2f}M" if n >= 1_000_000 else f"${n/1000:.0f}K"
+        print(f"#{i} {b['winner_side']:>3} {pick[:22]:<22} | {b['title'][:50]:<50} | {nstr:>7} ({b['confidence']:.0f}%)")
+
+    print("\n=== TOP 5 LARGEST SINGLE BETS ===")
+    for i, t in enumerate(result["top_largest"], 1):
+        pick = t.get("yes_sub", "YES") if t["side"] == "yes" else t.get("no_sub", "NO")
+        title = t.get("title", t["ticker"])[:50]
+        print(f"#{i} {t['side'].upper():>3} {pick[:22]:<22} | {title:<50} | ${t['notional']:>10,.0f} @ {int(t['price']*100)}c")
+
     html = build_html(result)
     send_email(html, result["date"])

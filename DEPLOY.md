@@ -215,7 +215,7 @@ rsync -avP /tmp/trades_snapshot.db \
 
 ```bash
 cd ~/whale-tracker
-pm2 start deploy/ecosystem.production.cjs
+pm2 start deploy/ecosystem.config.cjs
 pm2 logs whale-server --lines 30     # expect "[kalshi] live" and "[server] listening"
 pm2 save
 pm2 startup systemd -u deploy --hp /home/deploy   # run the printed sudo command
@@ -294,4 +294,4 @@ pm2 restart whale-server
 
 **Watch RAM on the 2 GB box** (`pm2 monit` / `free -h`). If the server gets
 OOM-restarted, lower `--max-old-space-size` further in
-`deploy/ecosystem.production.cjs`, or resize the droplet to 4 GB in the DO console.
+`deploy/ecosystem.config.cjs`, or resize the droplet to 4 GB in the DO console.
