@@ -136,6 +136,18 @@ export default function App() {
           <TopMarketsTable markets={topMarkets} />
         </>
       )}
+
+      <footer className="app-footer">
+        Created by{' '}
+        <a
+          className="app-footer__link"
+          href="https://vchen007.github.io/portfolio/"
+          target="_blank"
+          rel="noopener noreferrer"
+        >
+          Victor Chen
+        </a>
+      </footer>
     </div>
   );
 }
