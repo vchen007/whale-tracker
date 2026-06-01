@@ -399,6 +399,12 @@ setInterval(async () => {
   for (const ticker of tickers) {
     try {
       const res = await fetch(`https://api.elections.kalshi.com/trade-api/v2/markets/${ticker}`);
+      if (res.status === 429) {
+        // Datacenter IPs get throttled — back off hard, skip this ticker
+        // (it'll be retried on the next 20-min cycle).
+        await new Promise((r) => setTimeout(r, 5000));
+        continue;
+      }
       if (!res.ok) continue;
       const m = (await res.json()).market;
       if (!m) continue;
@@ -413,7 +419,7 @@ setInterval(async () => {
     } catch {
       // skip
     }
-    await new Promise((r) => setTimeout(r, 30)); // rate limit
+    await new Promise((r) => setTimeout(r, 200)); // rate limit — gentle on datacenter IPs
   }
   if (updated > 0) console.log(`[meta] refreshed ${updated}/${tickers.length} active tickers`);
 }, 20 * 60 * 1000);

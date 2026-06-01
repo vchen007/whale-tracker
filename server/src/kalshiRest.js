@@ -323,6 +323,8 @@ export async function fetchTradeHistory(privateKey, apiKeyId, sinceMs, onPage) {
   const minCreatedTime = new Date(sinceMs).toISOString();
   let cursor = null;
   let total  = 0;
+  let retries = 0;
+  const MAX_RETRIES = 5;   // bounded: this runs on a recurring interval, don't stack
   const FIXED_PATH = '/trade-api/v2/markets/trades';
 
   while (true) {
@@ -335,11 +337,24 @@ export async function fetchTradeHistory(privateKey, apiKeyId, sinceMs, onPage) {
     let data;
     try {
       const res = await fetch(url, { headers });
+      if (res.status === 429) {
+        // Datacenter IPs get throttled — back off and retry the same page
+        // (cursor unchanged) so we don't leave a gap in the trade history.
+        if (++retries > MAX_RETRIES) {
+          console.error(`[history] rate limited — giving up after ${MAX_RETRIES} retries`);
+          break;
+        }
+        const backoffMs = 2000 * retries;   // 2s, 4s, 6s, 8s, 10s
+        console.warn(`[history] rate limited — backing off ${backoffMs / 1000}s (retry ${retries}/${MAX_RETRIES})`);
+        await sleep(backoffMs);
+        continue;
+      }
       if (!res.ok) {
         console.error(`[history] REST error ${res.status}`);
         break;
       }
       data = await res.json();
+      retries = 0;   // reset after a successful page
     } catch (err) {
       console.error('[history] fetch error:', err.message);
       break;
