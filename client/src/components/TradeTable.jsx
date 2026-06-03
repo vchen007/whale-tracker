@@ -1,5 +1,7 @@
 import { useState, useRef, useEffect, useCallback } from 'react';
 import TradeRow from './TradeRow.jsx';
+import TradeCards from './TradeCards.jsx';
+import { useMediaQuery } from '../useMediaQuery.js';
 
 const COLS = ['DATE', 'TIME', 'SOURCE', 'MARKET', 'TITLE', 'PICK', 'CAT', 'TIMING', 'SIDE', 'PRICE', 'SIZE', 'NOTIONAL', 'TRADE ID'];
 
@@ -68,7 +70,10 @@ function useColumnResize() {
 }
 
 export default function TradeTable({ trades }) {
+  const isMobile = useMediaQuery('(max-width: 768px)');
   const { widths, onMouseDown, resetWidths } = useColumnResize();
+
+  if (isMobile) return <TradeCards trades={trades} />;
 
   return (
     <div className="table-wrapper">

@@ -411,3 +411,81 @@ html, body { height: 100%; background: var(--bg); color: var(--text); font-famil
   font-size: 0.75rem;
   letter-spacing: 0.05em;
 }
+
+/* ── Mobile cards (rendered below 768px in place of the tables) ──────────── */
+.cards-wrapper {
+  flex: 1;
+  overflow-y: auto;
+  display: flex;
+  flex-direction: column;
+  gap: 0.5rem;
+  padding: 0.5rem;
+}
+.cards-wrapper::-webkit-scrollbar { width: 6px; }
+.cards-wrapper::-webkit-scrollbar-thumb { background: var(--border); border-radius: 3px; }
+
+.trade-card {
+  background: var(--bg-card);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  padding: 0.55rem 0.7rem;
+  animation: flash-in 0.3s ease-out;
+}
+.trade-card--whale     { border-color: #2c3a1c; }
+.trade-card--megawhale { border-left: 3px solid var(--gold); }
+
+.trade-card__top {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  font-family: var(--font-mono);
+  font-size: 0.62rem;
+}
+.trade-card__cat  { color: var(--purple); letter-spacing: 0.04em; }
+.trade-card__time { margin-left: auto; color: var(--muted); white-space: nowrap; }
+
+.trade-card__title {
+  margin-top: 0.4rem;
+  font-size: 0.84rem;
+  font-weight: 600;
+  color: var(--bright);
+  line-height: 1.25;
+}
+.trade-card__pick {
+  margin-top: 0.25rem;
+  font-family: var(--font-mono);
+  font-size: 0.76rem;
+  font-weight: 600;
+  color: var(--text);
+}
+.trade-card__pick.side--yes { color: var(--green); }
+.trade-card__pick.side--no  { color: var(--red); }
+
+.trade-card__stats {
+  margin-top: 0.45rem;
+  display: flex;
+  align-items: baseline;
+  gap: 1rem;
+  font-family: var(--font-mono);
+  font-size: 0.82rem;
+}
+.trade-card__notional { color: var(--bright); font-weight: 700; }
+.market-rank { color: var(--dim); font-weight: 700; }
+
+/* ── Responsive: phones / small screens ──────────────────────────────────── */
+@media (max-width: 768px) {
+  .app { height: 100dvh; }
+
+  .app-header { flex-wrap: wrap; padding: 0.5rem 0.7rem; gap: 0.3rem 0.6rem; }
+  .app-brand  { flex-direction: column; align-items: flex-start; gap: 0.05rem; }
+  .app-title  { font-size: 0.92rem; letter-spacing: 0.02em; white-space: normal; line-height: 1.15; }
+  .app-byline { font-size: 0.62rem; }
+
+  .stats-bar  { gap: 1.1rem; padding: 0.45rem 0.7rem; }
+  .stat-value { font-size: 0.85rem; }
+
+  .tabs { padding: 0 0.7rem; }
+
+  .filter-bar   { flex-wrap: wrap; gap: 0.45rem 0.7rem; padding: 0.45rem 0.7rem; }
+  .filter-count { margin-left: 0; width: 100%; }
+}

@@ -1,4 +1,6 @@
 import { useState, useRef, useEffect, useCallback } from 'react';
+import TopMarketsCards from './TopMarketsCards.jsx';
+import { useMediaQuery } from '../useMediaQuery.js';
 
 const COLS = ['#', 'MARKET', 'TITLE', 'PICK', 'CAT', 'TRADES', 'YES VOL', 'NO VOL', 'TOTAL', 'YES / NO'];
 
@@ -63,7 +65,10 @@ function useColumnResize() {
 }
 
 export default function TopMarketsTable({ markets }) {
+  const isMobile = useMediaQuery('(max-width: 768px)');
   const { widths, onMouseDown, resetWidths } = useColumnResize();
+
+  if (isMobile) return <TopMarketsCards markets={markets} />;
 
   if (markets.length === 0) {
     return (
