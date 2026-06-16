@@ -2,7 +2,9 @@ import Database from 'better-sqlite3';
 import { resolve, dirname } from 'path';
 import { fileURLToPath } from 'url';
 
-const DB_PATH = resolve(dirname(fileURLToPath(import.meta.url)), '../../trades.db');
+const DB_PATH = process.env.DB_PATH
+  ? resolve(process.env.DB_PATH)
+  : resolve(dirname(fileURLToPath(import.meta.url)), '../../trades.db');
 
 let db;
 
@@ -54,6 +56,8 @@ export function initDb() {
       entry_price     INTEGER NOT NULL,
       count           INTEGER NOT NULL,
       est_fee         REAL,
+      role            TEXT,
+      est_net_ev      REAL,
       placed_ts       TEXT NOT NULL,
       status          TEXT NOT NULL,
       outcome         TEXT,
@@ -62,6 +66,18 @@ export function initDb() {
     );
     CREATE INDEX IF NOT EXISTS idx_auto_orders_status ON auto_orders (status);
   `);
+  // Migrations: role (maker/taker) + est_net_ev added so the adherence audit can
+  // grade execution role and per-order economics; est_q is the calibrated win
+  // probability behind est_net_ev (null → est_net_ev is the max-win gate value).
+  try { db.exec('ALTER TABLE auto_orders ADD COLUMN role       TEXT'); } catch { /* already exists */ }
+  try { db.exec('ALTER TABLE auto_orders ADD COLUMN est_net_ev REAL'); } catch { /* already exists */ }
+  try { db.exec('ALTER TABLE auto_orders ADD COLUMN est_q      REAL'); } catch { /* already exists */ }
+  // sold_price (cents) for early exits: the realized exit price the stop-loss /
+  // take-profit taker sold into. Required by the adherence audit's stop-loss
+  // accounting (exit cost = (entry_price − sold_price)·count). Previously
+  // closeAutoOrderEarly() received it but dropped it, leaving exit price
+  // unrecoverable except by inverting pnl_cents.
+  try { db.exec('ALTER TABLE auto_orders ADD COLUMN sold_price INTEGER'); } catch { /* already exists */ }
   return db;
 }
 
@@ -70,15 +86,49 @@ export function initDb() {
 export function insertAutoOrder(o) {
   return db.prepare(`
     INSERT OR REPLACE INTO auto_orders
-      (client_order_id, order_id, ticker, side, entry_price, count, est_fee, placed_ts, status)
-    VALUES (@client_order_id, @order_id, @ticker, @side, @entry_price, @count, @est_fee, @placed_ts, @status)
+      (client_order_id, order_id, ticker, side, entry_price, count, est_fee, role, est_q, est_net_ev, placed_ts, status)
+    VALUES (@client_order_id, @order_id, @ticker, @side, @entry_price, @count, @est_fee, @role, @est_q, @est_net_ev, @placed_ts, @status)
   `).run(o);
 }
 
+// Filled positions we currently hold (maker orders are promoted to 'placed'
+// once matched; taker orders are 'placed' immediately). Drives settlement and
+// stop-loss.
 export function getOpenAutoOrders() {
   return db.prepare(`
     SELECT * FROM auto_orders WHERE status = 'placed' ORDER BY placed_ts DESC
   `).all();
+}
+
+// Maker orders that are resting on the book, not yet known to be filled.
+export function getRestingAutoOrders() {
+  return db.prepare(`
+    SELECT * FROM auto_orders WHERE status = 'resting' ORDER BY placed_ts DESC
+  `).all();
+}
+
+// Everything that ties up capital / blocks a duplicate: resting + filled.
+export function getCommittedAutoOrders() {
+  return db.prepare(`
+    SELECT * FROM auto_orders WHERE status IN ('resting', 'placed') ORDER BY placed_ts DESC
+  `).all();
+}
+
+// Promote a resting maker order to a held position once it has matched.
+export function markAutoOrderFilled(clientOrderId) {
+  return db.prepare(`
+    UPDATE auto_orders SET status = 'placed'
+    WHERE client_order_id = ? AND status = 'resting'
+  `).run(clientOrderId);
+}
+
+// Record a resting maker order as canceled (TTL expiry or exchange cancel).
+// reason is stored in the outcome column for auditability.
+export function cancelAutoOrderRecord(clientOrderId, { ts, reason } = {}) {
+  return db.prepare(`
+    UPDATE auto_orders SET status = 'canceled', outcome = ?, settled_ts = ?
+    WHERE client_order_id = ? AND status = 'resting'
+  `).run(reason ?? 'canceled', ts ?? null, clientOrderId);
 }
 
 export function settleAutoOrder(clientOrderId, { outcome, pnlCents, settledTs }) {
@@ -96,9 +146,10 @@ export function closeAutoOrderEarly(clientOrderId, { pnlCents, soldPrice, ts }) 
     SET status = 'closed_early',
         outcome = ?,
         pnl_cents = ?,
+        sold_price = ?,
         settled_ts = ?
     WHERE client_order_id = ?
-  `).run(pnlCents > 0 ? 'win' : 'loss', pnlCents, ts, clientOrderId);
+  `).run(pnlCents > 0 ? 'win' : 'loss', pnlCents, soldPrice ?? null, ts, clientOrderId);
 }
 
 export function getAutoOrderSummary() {
@@ -112,11 +163,44 @@ export function getAutoOrderSummary() {
     FROM auto_orders
   `).get();
   const recent = db.prepare(`
-    SELECT ticker, side, entry_price, count, est_fee,
-           placed_ts, status, outcome, pnl_cents, settled_ts
+    SELECT ticker, side, entry_price, count, est_fee, role, est_q, est_net_ev,
+           placed_ts, status, outcome, pnl_cents, sold_price, settled_ts
     FROM auto_orders ORDER BY placed_ts DESC LIMIT 50
   `).all();
   return { ...totals, recent };
+}
+
+// ── Cross-venue arbitrage helpers ────────────────────────────────────────────
+
+// Latest trade per ticker since `sinceMs` (both venues) — last-trade prices are
+// the arb detector's indicative quotes.
+export function getLatestTradePricesSince(sinceMs) {
+  return db.prepare(`
+    SELECT t.ticker, t.source, t.side, t.yes_price, t.no_price, t.ts_ms
+    FROM trades t
+    JOIN (SELECT ticker, MAX(ts_ms) AS m FROM trades WHERE ts_ms > ? GROUP BY ticker) x
+      ON t.ticker = x.ticker AND t.ts_ms = x.m
+  `).all(sinceMs);
+}
+
+// Kalshi tickers with actual trades since `sinceMs` — proven taker flow, used
+// by the agent's find_markets discovery (a resting maker order only fills where
+// takers exist).
+export function getActiveKalshiTickersSince(sinceMs, limit = 30) {
+  return db.prepare(`
+    SELECT ticker, COUNT(*) AS trades, MAX(ts_ms) AS last_ms
+    FROM trades WHERE source = 'kalshi' AND ts_ms > ?
+    GROUP BY ticker ORDER BY trades DESC LIMIT ?
+  `).all(sinceMs, limit);
+}
+
+// Titles for a set of tickers (for cross-venue matching).
+export function getTitlesForTickers(tickers) {
+  if (tickers.length === 0) return [];
+  const placeholders = tickers.map(() => '?').join(',');
+  return db.prepare(`
+    SELECT ticker, title, source, close_time FROM market_titles WHERE ticker IN (${placeholders})
+  `).all(...tickers);
 }
 
 const insertStmt = () => db.prepare(`

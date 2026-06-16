@@ -7,6 +7,11 @@ module.exports = {
       interpreter: 'node',
       interpreter_args: '--max-old-space-size=2048',
       env_file: '/Users/claude_bot/whale-tracker/whale-tracker/.env',
+      // LIVE (real money) runs on a DISTINCT port from demo so the two can never
+      // collide on :3001. To actually arm live trading, set
+      // AUTO_TRADER_LIVE_CONFIRM=true in .env (the server stays disarmed on live
+      // without it). The dashboard/audit hit demo on :3001; live is on :3002.
+      env: { PORT: '3002' },
       watch: false,
       autorestart: true,
       restart_delay: 5000,   // wait 5s before restarting after a crash
@@ -14,6 +19,21 @@ module.exports = {
       log_date_format: 'YYYY-MM-DD HH:mm:ss',
       out_file: '/Users/claude_bot/whale-tracker/whale-tracker/logs/server.log',
       error_file: '/Users/claude_bot/whale-tracker/whale-tracker/logs/server-error.log',
+    },
+    {
+      name: 'whale-server-demo',
+      script: 'src/index.js',
+      cwd: '/Users/claude_bot/whale-tracker/whale-tracker/server',
+      interpreter: 'node',
+      interpreter_args: '--max-old-space-size=2048',
+      env: { ENV_FILE: '/Users/claude_bot/whale-tracker/whale-tracker/.env.demo', PORT: '3001' },
+      watch: false,
+      autorestart: true,
+      restart_delay: 5000,
+      max_restarts: 10,
+      log_date_format: 'YYYY-MM-DD HH:mm:ss',
+      out_file: '/Users/claude_bot/whale-tracker/whale-tracker/logs/server-demo.log',
+      error_file: '/Users/claude_bot/whale-tracker/whale-tracker/logs/server-demo-error.log',
     },
     {
       name: 'whale-client',
