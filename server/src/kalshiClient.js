@@ -1,5 +1,6 @@
 import WebSocket from 'ws';
 import { buildAuthParams } from './auth.js';
+import { KALSHI_WS_BASE } from './kalshiEnv.js';
 
 const RECONNECT_BASE_MS  = 5_000;
 const RECONNECT_MAX_MS   = 5 * 60 * 1000; // cap at 5 minutes
@@ -161,7 +162,8 @@ export class KalshiClient {
     this.onStatus('connecting');
 
     // Kalshi requires RSA-PSS auth headers on the HTTP upgrade request.
-    const wsUrl = process.env.KALSHI_WS_URL ?? 'wss://api.elections.kalshi.com/trade-api/ws/v2';
+    // KALSHI_WS_BASE follows KALSHI_API_BASE (or KALSHI_WS_URL override).
+    const wsUrl = KALSHI_WS_BASE;
     const wsPath = new URL(wsUrl).pathname;
     const { api_key, signature, timestamp } = buildAuthParams(this.privateKey, this.apiKeyId, wsPath);
     const ws = new WebSocket(wsUrl, {

@@ -43,6 +43,10 @@ RESEND_API_KEY = os.environ.get("RESEND_API_KEY")
 NOTIFY_EMAIL   = os.environ.get("NOTIFY_EMAIL", "claude_bot23@proton.me")
 NOTIFY_FROM    = os.environ.get("NOTIFY_FROM", "Whale Tracker <onboarding@resend.dev>")
 
+# Account tag (demo vs live) — mirrors the auto-trader email/log tagging.
+_KALSHI_BASE = os.environ.get("KALSHI_TRADING_API_BASE") or os.environ.get("KALSHI_API_BASE", "")
+ENV_TAG = "DEMO" if "demo" in _KALSHI_BASE.lower() else "LIVE"
+
 # All 14 Kalshi top-level categories
 CAT_EMOJI = {
     "Sports": "🏆",
@@ -352,7 +356,7 @@ def send_email(html, date):
         json={
             "from": NOTIFY_FROM,
             "to": NOTIFY_EMAIL,
-            "subject": f"🐳 Daily Best Bets — {date}",
+            "subject": f"[{ENV_TAG}] 🐳 Daily Best Bets — {date}",
             "html": html,
         },
     )

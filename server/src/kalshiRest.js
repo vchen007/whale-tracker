@@ -1,7 +1,8 @@
 import { sign, constants } from 'crypto';
 import { categoryFromTicker } from './kalshiClient.js';
+import { KALSHI_REST_BASE } from './kalshiEnv.js';
 
-const REST_BASE = 'https://api.elections.kalshi.com/trade-api/v2';
+const REST_BASE = KALSHI_REST_BASE;
 
 function authHeaders(privateKey, apiKeyId, path) {
   const ts = Date.now().toString();

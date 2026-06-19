@@ -194,12 +194,15 @@ export function getActiveKalshiTickersSince(sinceMs, limit = 30) {
   `).all(sinceMs, limit);
 }
 
-// Titles for a set of tickers (for cross-venue matching).
+// Titles for a set of tickers (for cross-venue matching). yes_sub/no_sub carry
+// the YES/NO outcome labels — on Kalshi these name the side (e.g. "Argentina"),
+// which the arb detector uses to confirm two YES contracts are the same side.
 export function getTitlesForTickers(tickers) {
   if (tickers.length === 0) return [];
   const placeholders = tickers.map(() => '?').join(',');
   return db.prepare(`
-    SELECT ticker, title, source, close_time FROM market_titles WHERE ticker IN (${placeholders})
+    SELECT ticker, title, source, close_time, yes_sub, no_sub
+    FROM market_titles WHERE ticker IN (${placeholders})
   `).all(...tickers);
 }
 

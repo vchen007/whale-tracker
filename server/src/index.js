@@ -135,12 +135,20 @@ const autoTrader = new AutoTrader({
   makerMode:          process.env.AUTO_TRADER_MAKER_MODE !== 'false',
   makerFeeCoeff:      Number(process.env.AUTO_TRADER_MAKER_FEE_COEFF ?? 0.07),
   unfilledTtlMinutes: Number(process.env.AUTO_TRADER_UNFILLED_TTL_MIN ?? 10),
+  // Maker-first / taker-fallback: post a resting maker, then cross the ask as a
+  // taker if still unfilled after makerFallbackMinutes (re-validates EV at the
+  // ask; cancels instead if it no longer clears). Off ⇒ unfilled makers cancel.
+  takerFallback:        process.env.AUTO_TRADER_TAKER_FALLBACK === 'true',
+  makerFallbackMinutes: Number(process.env.AUTO_TRADER_MAKER_FALLBACK_MIN ?? 10),
   stopLossEnabled: process.env.AUTO_TRADER_STOP_LOSS_ENABLED !== 'false',
   stopLossPercent: Number(process.env.AUTO_TRADER_STOP_LOSS_PERCENT ?? 50),
   // Comma-separated list overrides the default blocked-prefix set, e.g.:
   //   AUTO_TRADER_BLOCKED_PREFIXES=KXNBASPREAD,KXIPL,KXUFCFIGHT
-  ...(process.env.AUTO_TRADER_BLOCKED_PREFIXES
-    ? { blockedPrefixes: process.env.AUTO_TRADER_BLOCKED_PREFIXES.split(',').map((s) => s.trim()) }
+  // Defined (even empty) overrides the default set; empty string ⇒ no blocks.
+  // filter(Boolean) drops blank entries so a stray comma can't yield '' which
+  // would startsWith-match (and thus block) every ticker.
+  ...(process.env.AUTO_TRADER_BLOCKED_PREFIXES !== undefined
+    ? { blockedPrefixes: process.env.AUTO_TRADER_BLOCKED_PREFIXES.split(',').map((s) => s.trim()).filter(Boolean) }
     : {}),
   minPriceCents:   Number(process.env.AUTO_TRADER_MIN_PRICE_CENTS ?? 70),
   maxPriceCents:   Number(process.env.AUTO_TRADER_MAX_PRICE_CENTS ?? 84),
@@ -390,7 +398,7 @@ async function findMarkets({ limit = 15, maxSpreadCents = 10, windowHours = 48 }
         ticker: t.ticker, title: m.title ?? null,
         yes_bid: yesBid, yes_ask: yesAsk, spread_cents: yesAsk - yesBid,
         recent_trades: t.trades, last_trade_min_ago: Math.round((Date.now() - t.last_ms) / 60_000),
-        volume_24h: _volOf(m), close_time: m.close_time ?? null,
+        volume_24h: _volOf(m), close_time: m.expected_expiration_time ?? m.close_time ?? null,
         source: 'feed',
       });
     } catch { /* skip ticker */ }
@@ -414,7 +422,7 @@ async function findMarkets({ limit = 15, maxSpreadCents = 10, windowHours = 48 }
         ticker: m.ticker, title: m.title ?? null,
         yes_bid: yesBid, yes_ask: yesAsk, spread_cents: yesAsk - yesBid,
         recent_trades: 0, last_trade_min_ago: null,
-        volume_24h: _volOf(m), close_time: m.close_time ?? null,
+        volume_24h: _volOf(m), close_time: m.expected_expiration_time ?? m.close_time ?? null,
         source: 'scan',
       });
     }

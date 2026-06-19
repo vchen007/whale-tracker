@@ -3,12 +3,20 @@ server/node_modules/
 client/node_modules/
 client/dist/
 .env
+.env.demo
+.env.*.local
+# Timestamped .env backups hold secrets verbatim — never commit
+.env.bak*
+.env.demo.bak*
 *.pem
 *.key
 auth_token*.txt
 trades.db
 trades.db-shm
 trades.db-wal
+trades_demo.db
+trades_demo.db-shm
+trades_demo.db-wal
 .DS_Store
 .Rhistory
 .claude/
@@ -19,3 +27,6 @@ logs/
 PNL_ANALYSIS_*.md
 auto_trader_pnl_*.csv
 daily_summary.txt
+
+# Generated audit reports/transcripts/logs — regenerated nightly, not source
+outcomes/outputs/

@@ -7,6 +7,11 @@
     "dev:server": "npm run dev --prefix server",
     "dev:client": "npm run dev --prefix client",
     "dev": "concurrently -n server,client -c cyan,magenta \"npm run dev:server\" \"npm run dev:client\"",
+    "dev:demo": "ENV_FILE=.env.demo npm run dev:server",
+    "demo:check": "ENV_FILE=.env.demo node server/src/demoCheck.js",
+    "arb:scan": "node server/src/arbScan.js",
+    "backfill:outcomes": "node server/src/backfillOutcomes.js",
+    "trade:agent": "node agent-trader/agentTrader.js",
     "start": "npm run start --prefix server"
   },
   "devDependencies": {
