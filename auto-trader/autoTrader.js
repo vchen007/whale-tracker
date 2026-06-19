@@ -22,7 +22,8 @@ import {
 // the trading base (overridable to demo via KALSHI_API_BASE / KALSHI_TRADING_API_BASE).
 const REST_BASE  = KALSHI_TRADING_BASE;
 // Signing path is host-independent — same /trade-api/v2 path on demo and prod.
-const ORDER_PATH = '/trade-api/v2/portfolio/orders';
+const ORDER_PATH = '/trade-api/v2/portfolio/orders';               // list/cancel (still live)
+const CREATE_ORDER_PATH = '/trade-api/v2/portfolio/events/orders'; // create (the v1 path 410s now)
 // Account tag for log lines (mirrors the email tagging).
 const ENV_TAG = IS_DEMO ? 'DEMO' : 'LIVE';
 
@@ -97,6 +98,23 @@ function authHeaders(privateKey, apiKeyId, path, method = 'POST') {
     'KALSHI-ACCESS-SIGNATURE': sig,
     'KALSHI-ACCESS-TIMESTAMP': ts,
     'Content-Type':            'application/json',
+  };
+}
+
+// Build a Kalshi create-order-v2 body. That endpoint quotes the YES leg only:
+//   buy YES @ P¢  -> side 'bid', price  P/100
+//   buy NO  @ P¢  -> side 'ask', price (100−P)/100   (selling YES == buying NO at 1−price)
+// price is fixed-point dollars (string); count is fixed-point (string).
+function buildOrderBody({ ticker, side, priceCents, count, clientOrderId }) {
+  const yesPriceCents = side === 'yes' ? priceCents : 100 - priceCents;
+  return {
+    ticker,
+    client_order_id:            clientOrderId,
+    side:                       side === 'yes' ? 'bid' : 'ask',
+    price:                      (yesPriceCents / 100).toFixed(2),
+    count:                      Number(count).toFixed(2),
+    time_in_force:              'good_till_canceled',
+    self_trade_prevention_type: 'taker_at_cross',
   };
 }
 
@@ -461,15 +479,9 @@ export class AutoTrader {
 
     const clientOrderId = `auto-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`;
 
-    const body = {
-      ticker:          trade.ticker,
-      client_order_id: clientOrderId,
-      type:            'limit',
-      action:          'buy',
-      side,
-      count:           this.count,
-      ...(side === 'yes' ? { yes_price: limitPrice } : { no_price: limitPrice }),
-    };
+    const body = buildOrderBody({
+      ticker: trade.ticker, side, priceCents: limitPrice, count: this.count, clientOrderId,
+    });
     // NOTE: if your Kalshi API version supports it, adding `post_only: true` here
     // would make the exchange itself reject any order that would cross (take).
 
@@ -491,9 +503,9 @@ export class AutoTrader {
     };
 
     try {
-      const res  = await fetch(`${REST_BASE}/portfolio/orders`, {
+      const res  = await fetch(`${REST_BASE}/portfolio/events/orders`, {
         method:  'POST',
-        headers: authHeaders(this.privateKey, this.apiKeyId, ORDER_PATH),
+        headers: authHeaders(this.privateKey, this.apiKeyId, CREATE_ORDER_PATH),
         body:    JSON.stringify(body),
       });
       const data = await res.json();
@@ -505,7 +517,7 @@ export class AutoTrader {
       } else {
         // Maker orders rest until matched; taker orders fill immediately.
         entry.status  = role === 'maker' ? 'resting' : 'placed';
-        entry.orderId = data?.order?.order_id ?? null;
+        entry.orderId = data?.order_id ?? null;   // create-order-v2 response is flat
         console.log(
           `[auto-trader] ✅ ${trade.ticker} BUY ${side.toUpperCase()} x${this.count} @ ${limitPrice}¢ ` +
           `(${role}${role === 'maker' ? `, was ${whalePrice}¢` : ''}${entry.orderId ? `, ${entry.orderId}` : ''})`
@@ -564,21 +576,21 @@ export class AutoTrader {
     for (const o of resting) {
       if (!o.order_id) continue; // can't reconcile without a Kalshi order id
       try {
-        const path = `${ORDER_PATH}/${o.order_id}`;
-        const res  = await fetch(`${REST_BASE}/portfolio/orders/${o.order_id}`, {
-          headers: authHeaders(this.privateKey, this.apiKeyId, path, 'GET'),
+        const path = `${ORDER_PATH}/${o.order_id}`;   // cancel path (DELETE still works)
+        // The single-order GET was retired (404). Read this ticker's TERMINAL
+        // orders and match by id: 'executed' => filled, 'canceled'/'expired' =>
+        // canceled, absent => still resting (active orders aren't in this list).
+        const listPath = '/trade-api/v2/portfolio/orders';
+        const res  = await fetch(`${REST_BASE}/portfolio/orders?ticker=${encodeURIComponent(o.ticker)}`, {
+          headers: authHeaders(this.privateKey, this.apiKeyId, listPath, 'GET'),
         });
         if (!res.ok) continue;
-        const data = await res.json();
-        const ord  = data.order ?? {};
-        const status    = (ord.status ?? '').toLowerCase();
-        const remaining = Number(ord.remaining_count ?? o.count);
-        const filledCount = o.count - remaining;
+        const data   = await res.json();
+        const match  = (data.orders || []).find((x) => x.order_id === o.order_id);
+        const status = (match?.status ?? '').toLowerCase();
 
-        // Filled (any matched contracts) → promote to a held position.
-        // (count = 1 default makes this exact; partials on count > 1 are treated
-        //  as filled — see the maker-mode note on `count`.)
-        if (status === 'executed' || remaining === 0 || filledCount > 0) {
+        // Filled → promote to a held position.
+        if (status === 'executed') {
           markAutoOrderFilled(o.client_order_id);
           filled++;
           console.log(`[auto-trader] 🎯 filled ${o.ticker} ${o.side.toUpperCase()} @ ${o.entry_price}¢`);
@@ -954,23 +966,15 @@ export class AutoTrader {
     this._inFlight.set(resId, { ticker, eventTicker: v.eventTicker, notional: v.addNotional });
     try {
       const clientOrderId = `agent-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`;
-      const body = {
-        ticker,
-        client_order_id: clientOrderId,
-        type:   'limit',
-        action: 'buy',
-        side,
-        count,
-        ...(side === 'yes' ? { yes_price: entryPrice } : { no_price: entryPrice }),
-      };
-      const res  = await fetch(`${REST_BASE}/portfolio/orders`, {
+      const body = buildOrderBody({ ticker, side, priceCents: entryPrice, count, clientOrderId });
+      const res  = await fetch(`${REST_BASE}/portfolio/events/orders`, {
         method:  'POST',
-        headers: authHeaders(this.privateKey, this.apiKeyId, ORDER_PATH),
+        headers: authHeaders(this.privateKey, this.apiKeyId, CREATE_ORDER_PATH),
         body:    JSON.stringify(body),
       });
       const data = await res.json();
       if (!res.ok) throw new Error(data?.error?.message ?? JSON.stringify(data));
-      const orderId = data?.order?.order_id ?? null;
+      const orderId = data?.order_id ?? null;   // create-order-v2 response is flat
       const status  = 'resting'; // initial DB state; reconciler flips resting→filled/settled from the exchange (taker fills ~immediately)
       insertAutoOrder({
         client_order_id: clientOrderId,
