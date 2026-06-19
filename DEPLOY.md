@@ -198,9 +198,15 @@ AUTO_TRADER_STOP_LOSS_ENABLED=false
 
 ```bash
 cd ~/whale-tracker
-npm install && npm run install:all        # root + server + client deps
-npm install --prefix agent-trader         # @anthropic-ai/claude-agent-sdk, zod, dotenv
+npm install                               # root (shared deps for auto-trader/outcomes)
+npm install --prefix server               # server (compiles better-sqlite3)
+npm install --prefix agent-trader         # @anthropic-ai/claude-agent-sdk, zod 4, dotenv
 ```
+
+> The **client** (React/Vite) is **not** needed for a headless trader — skip it.
+> Only install it if you add the dashboard (§12), and there with
+> `npm install --prefix client --legacy-peer-deps` (it has a Vite/plugin-react
+> peer-dep conflict that `--legacy-peer-deps` resolves harmlessly).
 
 ---
 
