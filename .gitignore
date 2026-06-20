@@ -17,6 +17,8 @@ trades.db-wal
 trades_demo.db
 trades_demo.db-shm
 trades_demo.db-wal
+# Timestamped DB backups from dedup/VACUUM maintenance — multi-GB, never commit
+trades*.db.bak*
 .DS_Store
 .Rhistory
 .claude/
