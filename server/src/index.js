@@ -9,8 +9,8 @@ import rateLimit from '@fastify/rate-limit';
 import { loadPrivateKey } from './auth.js';
 import { KalshiClient } from './kalshiClient.js';
 import { AutoTrader } from '../../auto-trader/autoTrader.js';
-import { initDb, insertTrade, bulkInsert, getTradesSince, getTopMarkets, getOldestTradeTs, getNewestTradeTs, bulkInsertTitles, getTitleCount, getCategorizedTitleCount, getCloseTimeCount, getTickerCategoryMap, getTickerTitleMap, getTickerMetaMap, getRecentlyActiveTickers, refreshMarketMeta, setEventActualStartTime, getUniqueSeries, updateCategoriesBySeries, getMissingTitleTickers, getTickersMissingCategory, bulkUpdateCategories, purgeSmallTrades, getAutoOrderSummary, getActiveKalshiTickersSince } from './db.js';
-import { fetchTradeHistory, fetchAllMarketTitles, fetchCategories, fetchEventData, fetchEventCategoryMap, fetchTitlesByTickers } from './kalshiRest.js';
+import { initDb, insertTrade, bulkInsert, getTradesSince, getTopMarkets, getOldestTradeTs, getNewestTradeTs, bulkInsertTitles, getTickerCategoryMap, getTickerTitleMap, getTickerMetaMap, getRecentlyActiveTickers, refreshMarketMeta, setEventActualStartTime, getUniqueSeries, updateCategoriesBySeries, getMissingTitleTickers, getTickersMissingCategory, bulkUpdateCategories, purgeSmallTrades, getAutoOrderSummary, getActiveKalshiTickersSince } from './db.js';
+import { fetchTradeHistory, fetchCategories, fetchEventData, fetchTitlesByTickers } from './kalshiRest.js';
 import { fetchPolymarketTrades } from './polymarketRest.js';
 import { startSchedulePoller, findKalshiGameStart, findPolymarketGameStart } from './sportsApi.js';
 import authMiddleware from './authMiddleware.js';
@@ -126,6 +126,10 @@ const autoTrader = new AutoTrader({
   privateKey,
   apiKeyId:        API_KEY_ID,
   enabled:         autoTraderEnabled,
+  // Disarm the whale-COPY path independently of the agent. Set
+  // AUTO_TRADER_WHALE_COPY_ENABLED=false to run the agent only (the agent's
+  // placeOrderDirect ignores this flag; it gates on `enabled`).
+  whaleCopyEnabled: process.env.AUTO_TRADER_WHALE_COPY_ENABLED !== 'false',
   category:        process.env.AUTO_TRADER_CATEGORY ?? 'Sports',
   count:           Number(process.env.AUTO_TRADER_COUNT ?? 1),
   minNotional:     Number(process.env.AUTO_TRADER_MIN_NOTIONAL ?? 25_000),
@@ -698,26 +702,14 @@ if (!DATA_IS_DEMO) setInterval(async () => {
   }
 }, 5 * 60 * 1000);
 
-// Seed market titles in background if not yet cached, or if close_time is missing.
-// Skipped in demo — these are prod-market titles, irrelevant to demo trading.
-if (!DATA_IS_DEMO && (getTitleCount() === 0 || getCategorizedTitleCount() === 0 || getCloseTimeCount() === 0)) {
-  console.log('[titles] fetching market titles + close times in background…');
-  (async () => {
-    try {
-      const eventCategoryMap = await fetchEventCategoryMap(privateKey, API_KEY_ID);
-      console.log(`[events] loaded ${eventCategoryMap.size} event categories`);
-      const n = await fetchAllMarketTitles(privateKey, API_KEY_ID, (page) => {
-        bulkInsertTitles(page);
-        for (const [ticker, , category] of page) {
-          if (category) categoryMap.set(ticker, category);
-        }
-      }, eventCategoryMap);
-      console.log(`[titles] cached ${n} market titles with close times`);
-    } catch (err) {
-      console.error('[titles] error:', err.message);
-    }
-  })();
-}
+// NOTE: we intentionally do NOT seed market_titles from the full Kalshi
+// /markets catalog. That crawl (fetchAllMarketTitles) pulls *every* market the
+// exchange has ever listed — dominated by KXMVE* multivariate/parlay combos,
+// a combinatorial explosion that bloated market_titles to ~12M orphan rows
+// (≈99.9% never referenced by a trade) and a multi-GB DB file. Titles are
+// instead populated on demand, bounded by actual trade flow, by the per-ticker
+// backfill below + the periodic backfill loop (getMissingTitleTickers →
+// fetchTitlesByTickers). A newly-traded ticker gets its title within ~5 min.
 
 // Backfill titles for any tickers missing them via direct /markets/{ticker} endpoint.
 // Skipped in demo (empty list) — avoids a startup burst of prod-ticker fetches at the demo API.
