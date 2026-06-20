@@ -148,6 +148,11 @@ export class AutoTrader {
   constructor({
     privateKey, apiKeyId,
     enabled = true,
+    // Independent gate for the whale-COPY path (onTrade). `enabled` is the master
+    // kill-switch for BOTH copy and the agent's placeOrderDirect; this lets a
+    // box run the agent only (whaleCopyEnabled=false, enabled=true) without also
+    // disarming the agent. Default true preserves prior behavior.
+    whaleCopyEnabled = true,
     category = 'Sports',
     count = 1,
     minNotional = 25_000,
@@ -185,6 +190,7 @@ export class AutoTrader {
     this.privateKey         = privateKey;
     this.apiKeyId           = apiKeyId;
     this.enabled            = enabled;
+    this.whaleCopyEnabled   = whaleCopyEnabled;
     this.category           = category;
     this.count              = count;
     this.minNotional        = minNotional;
@@ -232,6 +238,7 @@ export class AutoTrader {
   status() {
     return {
       enabled:            this.enabled,
+      whaleCopyEnabled:   this.whaleCopyEnabled,
       category:           this.category,
       count:              this.count,
       minNotional:        this.minNotional,
@@ -269,7 +276,10 @@ export class AutoTrader {
    * `category = 'ALL'` (or null) means trade every category.
    */
   async onTrade(trade) {
-    if (!this.enabled) return;
+    // Master kill-switch OR the copy-specific gate disarms whale-copy. The agent
+    // path (placeOrderDirect/_validateDirectOrder) checks only `enabled`, so it
+    // keeps trading when whaleCopyEnabled=false.
+    if (!this.enabled || !this.whaleCopyEnabled) return;
     if ((trade.source ?? 'kalshi') !== 'kalshi') return;
     if (this.category && this.category !== 'ALL' && trade.category !== this.category) return;
 

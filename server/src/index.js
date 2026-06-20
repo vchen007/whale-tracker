@@ -126,6 +126,10 @@ const autoTrader = new AutoTrader({
   privateKey,
   apiKeyId:        API_KEY_ID,
   enabled:         autoTraderEnabled,
+  // Disarm the whale-COPY path independently of the agent. Set
+  // AUTO_TRADER_WHALE_COPY_ENABLED=false to run the agent only (the agent's
+  // placeOrderDirect ignores this flag; it gates on `enabled`).
+  whaleCopyEnabled: process.env.AUTO_TRADER_WHALE_COPY_ENABLED !== 'false',
   category:        process.env.AUTO_TRADER_CATEGORY ?? 'Sports',
   count:           Number(process.env.AUTO_TRADER_COUNT ?? 1),
   minNotional:     Number(process.env.AUTO_TRADER_MIN_NOTIONAL ?? 25_000),
