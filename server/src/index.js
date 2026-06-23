@@ -157,6 +157,7 @@ const autoTrader = new AutoTrader({
   minPriceCents:   Number(process.env.AUTO_TRADER_MIN_PRICE_CENTS ?? 70),
   maxPriceCents:   Number(process.env.AUTO_TRADER_MAX_PRICE_CENTS ?? 84),
   dedupeByEvent:   process.env.AUTO_TRADER_DEDUPE_BY_EVENT !== 'false',
+  maxPerGame:      Number(process.env.AUTO_TRADER_MAX_PER_GAME ?? 5),
   // Bankroll rails for autonomous operation (<=0 disables a given cap).
   maxCapital:       Number(process.env.AUTO_TRADER_MAX_CAPITAL ?? 500),
   maxOpenPositions: Number(process.env.AUTO_TRADER_MAX_OPEN_POSITIONS ?? 25),
