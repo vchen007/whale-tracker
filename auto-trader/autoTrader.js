@@ -141,6 +141,7 @@ export class AutoTrader {
    * @param {number}  [opts.minPriceCents]      min entry price in cents (default 70 — favorites floor).
    * @param {number}  [opts.maxPriceCents]      max entry price in cents (default 84).
    * @param {boolean} [opts.dedupeByEvent]      skip if we already hold/await a position on the same event.
+   * @param {number}  [opts.maxPerGame]         max concurrent positions on the same game (same DATETEAMS segment, default 5; <=0 disables).
    * @param {number}  [opts.maxCapital]         max total open notional in dollars (default 500; <=0 disables).
    * @param {number}  [opts.maxOpenPositions]   max concurrent committed positions (default 25; <=0 disables).
    * @param {number}  [opts.maxDailyLoss]       realized-loss kill-switch in dollars (default 100; <=0 disables).
@@ -177,6 +178,7 @@ export class AutoTrader {
     minPriceCents = 70,
     maxPriceCents = 84,
     dedupeByEvent = true,
+    maxPerGame = 5,
     maxCapital = 500,
     maxOpenPositions = 25,
     maxPerTicker = 5,
@@ -206,6 +208,7 @@ export class AutoTrader {
     this.minPriceCents      = minPriceCents;
     this.maxPriceCents      = maxPriceCents;
     this.dedupeByEvent      = dedupeByEvent;
+    this.maxPerGame         = maxPerGame;
     this.maxCapital         = maxCapital;
     this.maxOpenPositions   = maxOpenPositions;
     this.maxPerTicker       = maxPerTicker;
@@ -254,6 +257,7 @@ export class AutoTrader {
       minPriceCents:      this.minPriceCents,
       maxPriceCents:      this.maxPriceCents,
       dedupeByEvent:      this.dedupeByEvent,
+      maxPerGame:         this.maxPerGame,
       maxCapital:         this.maxCapital,
       maxOpenPositions:   this.maxOpenPositions,
       maxPerTicker:       this.maxPerTicker,
@@ -318,18 +322,17 @@ export class AutoTrader {
     const committed   = getCommittedAutoOrders();
     const inFlight    = [...this._inFlight.values()];
     const eventTicker = trade.ticker.split('-').slice(0, -1).join('-');
+    const gameKey     = trade.ticker.split('-')[1]; // DATETEAMS segment — same for all bet types on one game
     const addNotional = (price / 100) * this.count; // whale price = conservative upper bound (maker fills lower)
 
-    // Per-event conflict: any committed order on the same event (same ticker =
-    // duplicate, different ticker = opposing outcome), OR any in-flight order.
-    if (this.dedupeByEvent) {
-      const committedConflict = committed.some((o) => {
-        const oEvent = o.ticker.split('-').slice(0, -1).join('-');
-        return oEvent === eventTicker;
-      });
-      const inFlightConflict = inFlight.some((r) => r.eventTicker === eventTicker);
-      if (committedConflict || inFlightConflict) {
-        console.log(`[auto-trader] skip ${trade.ticker} — conflict on event ${eventTicker} (committed or in-flight)`);
+    // Game-level cap: allow up to maxPerGame bets on the same game (same DATETEAMS
+    // segment), including exact duplicates. Exact-ticker duplicates are also bounded
+    // by maxPerTicker below.
+    if (this.maxPerGame > 0) {
+      const sameGame = committed.filter((o) => o.ticker.split('-')[1] === gameKey).length
+                     + inFlight.filter((r) => r.gameKey === gameKey).length;
+      if (sameGame >= this.maxPerGame) {
+        console.log(`[auto-trader] skip ${trade.ticker} — game cap ${sameGame}/${this.maxPerGame} on ${gameKey}`);
         return;
       }
     }
@@ -363,7 +366,7 @@ export class AutoTrader {
     // Reserve the slot SYNCHRONOUSLY (before the first await in _placeOrder) so a
     // concurrent onTrade sees it and skips. Released once placement resolves.
     const resId = `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
-    this._inFlight.set(resId, { ticker: trade.ticker, eventTicker, notional: addNotional });
+    this._inFlight.set(resId, { ticker: trade.ticker, eventTicker, gameKey, notional: addNotional });
     try {
       await this._placeOrder(trade);
     } finally {
@@ -922,10 +925,13 @@ export class AutoTrader {
     const committed   = getCommittedAutoOrders();
     const inFlight    = [...this._inFlight.values()];
     const eventTicker = ticker.split('-').slice(0, -1).join('-');
-    if (this.dedupeByEvent) {
-      const conflict = committed.some((o) => o.ticker.split('-').slice(0, -1).join('-') === eventTicker)
-                    || inFlight.some((r) => r.eventTicker === eventTicker);
-      if (conflict) return { ok: false, reason: `conflict on event ${eventTicker} (existing or in-flight position)` };
+    const gameKey     = ticker.split('-')[1];
+    if (this.maxPerGame > 0) {
+      const sameGame = committed.filter((o) => o.ticker.split('-')[1] === gameKey).length
+                     + inFlight.filter((r) => r.gameKey === gameKey).length;
+      if (sameGame >= this.maxPerGame) {
+        return { ok: false, reason: `game cap ${sameGame}/${this.maxPerGame} on ${gameKey}` };
+      }
     }
     const openCount = committed.length + inFlight.length;
     if (this.maxOpenPositions > 0 && openCount >= this.maxOpenPositions) {
@@ -948,7 +954,7 @@ export class AutoTrader {
     }
 
     return {
-      ok: true, role, entryPrice: limitPrice, fee, estQ, estNetEv, eventTicker, addNotional, isSports,
+      ok: true, role, entryPrice: limitPrice, fee, estQ, estNetEv, eventTicker, gameKey, addNotional, isSports,
       bestBid: Number.isFinite(bestBid) ? bestBid : null,
       bestAsk, closeTime: book.closeTime, daysToClose,
     };
@@ -973,7 +979,7 @@ export class AutoTrader {
     // Reserve the slot so concurrent agent calls / whale copies can't stack past
     // the caps (same in-flight mechanism as onTrade).
     const resId = `agent-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
-    this._inFlight.set(resId, { ticker, eventTicker: v.eventTicker, notional: v.addNotional });
+    this._inFlight.set(resId, { ticker, eventTicker: v.eventTicker, gameKey: v.gameKey, notional: v.addNotional });
     try {
       const clientOrderId = `agent-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`;
       const body = buildOrderBody({ ticker, side, priceCents: entryPrice, count, clientOrderId });

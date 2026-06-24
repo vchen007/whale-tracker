@@ -157,6 +157,7 @@ const autoTrader = new AutoTrader({
   minPriceCents:   Number(process.env.AUTO_TRADER_MIN_PRICE_CENTS ?? 70),
   maxPriceCents:   Number(process.env.AUTO_TRADER_MAX_PRICE_CENTS ?? 84),
   dedupeByEvent:   process.env.AUTO_TRADER_DEDUPE_BY_EVENT !== 'false',
+  maxPerGame:      Number(process.env.AUTO_TRADER_MAX_PER_GAME ?? 5),
   // Bankroll rails for autonomous operation (<=0 disables a given cap).
   maxCapital:       Number(process.env.AUTO_TRADER_MAX_CAPITAL ?? 500),
   maxOpenPositions: Number(process.env.AUTO_TRADER_MAX_OPEN_POSITIONS ?? 25),
@@ -386,9 +387,9 @@ async function findMarkets({ limit = 15, maxSpreadCents = 10, windowHours = 48 }
   const out = [];
 
   // 1) Proven-flow tickers from our own trade feed, enriched with live books.
-  const active = getActiveKalshiTickersSince(Date.now() - windowHours * 3600_000, 25)
+  const active = getActiveKalshiTickersSince(Date.now() - windowHours * 3600_000, 60)
     .filter((t) => !autoTrader.blockedPrefixes.some((p) => t.ticker.startsWith(p)));
-  for (const t of active.slice(0, 20)) {
+  for (const t of active.slice(0, 50)) {
     try {
       const res = await fetch(`${KALSHI_TRADING_BASE}/markets/${t.ticker}`);
       if (!res.ok) continue;
@@ -433,12 +434,30 @@ async function findMarkets({ limit = 15, maxSpreadCents = 10, windowHours = 48 }
     out.sort((a, b) => b.volume_24h - a.volume_24h);
   }
 
+  // Diversify the returned list by series so one hot category (e.g. World Cup
+  // during the tournament) can't fill every slot. `out` is already sorted by
+  // recent_trades / volume, so we keep the best book per series first (up to
+  // perSeriesCap each), then backfill remaining slots with the next-best
+  // regardless of series — this guarantees up to `limit` markets even when only
+  // one series is liquid, while surfacing other high-liquidity categories.
+  const perSeriesCap = Math.max(2, Math.ceil(limit / 4));
+  const seriesSeen = new Map();
+  const primary = [];   // diversified picks (<= perSeriesCap per series)
+  const overflow = [];  // the rest, in sorted order, for backfill
+  for (const m of out) {
+    const series = (m.ticker ?? '').split('-')[0];
+    const n = seriesSeen.get(series) ?? 0;
+    if (n < perSeriesCap) { seriesSeen.set(series, n + 1); primary.push(m); }
+    else                  { overflow.push(m); }
+  }
+  const markets = [...primary, ...overflow].slice(0, limit);
+
   return {
-    count: Math.min(out.length, limit),
+    count: markets.length,
     note: out.length === 0
       ? 'No markets with a usable book found — taker flow is absent right now; placing maker orders is unlikely to fill.'
       : undefined,
-    markets: out.slice(0, limit),
+    markets,
   };
 }
 
