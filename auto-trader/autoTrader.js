@@ -7,6 +7,8 @@ import { sign, constants } from 'crypto';
 import { notifyTrade } from '../server/src/notify.js';
 import { KALSHI_TRADING_BASE, IS_DEMO } from '../server/src/kalshiEnv.js';
 import { categoryFromTicker } from '../server/src/kalshiClient.js';
+import { loadCalibration } from '../server/src/calibration.js';
+import { loadOverrides, saveOverrides, validateChange, TUNABLE } from '../server/src/strategyOverrides.js';
 import {
   insertAutoOrder,
   getOpenAutoOrders,
@@ -187,6 +189,7 @@ export class AutoTrader {
     calibrationAlpha = -1.736,
     calibrationPsi = 0.034,
     minEvDollars = 0,
+    yesEvPenalty = 0,   // extra EV (dollars) a YES-side order must clear — favors NO
     maxDaysToClose = 10,
   }) {
     this.privateKey         = privateKey;
@@ -217,7 +220,17 @@ export class AutoTrader {
     this.calibrationAlpha   = calibrationAlpha;
     this.calibrationPsi     = calibrationPsi;
     this.minEvDollars       = minEvDollars;
+    this.yesEvPenalty       = yesEvPenalty;
     this.maxDaysToClose     = maxDaysToClose;
+    // Adopt the persisted adaptive fit (calibration.json) over the env/default
+    // alpha/psi if recalibrate.js has written one. Hot-reloadable at runtime;
+    // remembers the env baseline so removing the file cleanly reverts.
+    this._envAlpha          = this.calibrationAlpha;
+    this._envPsi            = this.calibrationPsi;
+    this._calibrationSource = 'env/default';
+    this.reloadCalibration();
+    // Adopt any agent-applied strategy overrides persisted to strategy-overrides.json.
+    this._applyOverrides();
 
     // Realized-P&L tracking for the daily-loss kill-switch (in-memory, resets daily).
     this._pnlDate            = null;
@@ -237,6 +250,63 @@ export class AutoTrader {
 
   enable()  { this.enabled = true;  console.log('[auto-trader] enabled');  }
   disable() { this.enabled = false; console.log('[auto-trader] disabled'); }
+
+  /**
+   * Adopt the persisted adaptive calibration (calibration.json) if present,
+   * overriding the env/default alpha/psi. Called at construction and on demand
+   * via POST /auto-trader/reload-calibration (recalibrate.js triggers it after
+   * an auto-applied fit). No-op when the file is absent or unchanged.
+   */
+  reloadCalibration() {
+    const cal  = loadCalibration();
+    const prev = { alpha: this.calibrationAlpha, psi: this.calibrationPsi };
+    const next = cal ? { alpha: cal.alpha, psi: cal.psi } : { alpha: this._envAlpha, psi: this._envPsi };
+    const src  = cal ? `calibration.json (n=${cal.n ?? '?'}, ${cal.fittedAt ?? 'n/a'})` : 'env/default';
+    this._calibrationSource = src;
+    if (next.alpha === prev.alpha && next.psi === prev.psi) {
+      return { reloaded: false, unchanged: true, alpha: next.alpha, psi: next.psi, source: src };
+    }
+    this.calibrationAlpha = next.alpha;
+    this.calibrationPsi   = next.psi;
+    console.log(`[auto-trader] calibration reloaded: α ${prev.alpha}→${next.alpha}, ψ ${prev.psi}→${next.psi} (${src})`);
+    return { reloaded: true, prev, now: next, source: src };
+  }
+
+  /** Adopt persisted strategy overrides (within absolute bounds) at construction. */
+  _applyOverrides() {
+    const ov = loadOverrides();
+    for (const [k, v] of Object.entries(ov)) {
+      const spec = TUNABLE[k];
+      if (!spec) continue;
+      let val = Number(v);
+      if (spec.int) val = Math.round(val);
+      if (Number.isFinite(val) && val >= spec.min && val <= spec.max) this[k] = val;
+    }
+  }
+
+  /**
+   * Apply one allowlisted strategy-knob change from the daily agent. The
+   * server-side guardrails (allowlist, absolute bounds, per-run step cap, and
+   * the minPrice<maxPrice invariant) are enforced HERE — the agent only
+   * proposes. Risk caps are NOT tunable and never reach this method. Mutates the
+   * live instance and persists so the change survives a restart.
+   */
+  setParam(name, value) {
+    const cur = this[name];
+    const res = validateChange(name, value, cur);
+    if (!res.ok) return { ok: false, name, current: cur, reason: res.reason };
+    const nextMin = name === 'minPriceCents' ? res.value : this.minPriceCents;
+    const nextMax = name === 'maxPriceCents' ? res.value : this.maxPriceCents;
+    if (nextMin >= nextMax) {
+      return { ok: false, name, current: cur, reason: `would make minPriceCents (${nextMin}) >= maxPriceCents (${nextMax})` };
+    }
+    this[name] = res.value;
+    const ov = loadOverrides();
+    ov[name] = res.value;
+    saveOverrides(ov);
+    console.log(`[auto-trader] strategy param ${name}: ${cur} → ${res.value} (daily agent)`);
+    return { ok: true, name, prev: cur, now: res.value };
+  }
 
   status() {
     return {
@@ -265,7 +335,9 @@ export class AutoTrader {
       calibratedEv:       this.calibratedEv,
       calibrationAlpha:   this.calibrationAlpha,
       calibrationPsi:     this.calibrationPsi,
+      calibrationSource:  this._calibrationSource,
       minEvDollars:       this.minEvDollars,
+      yesEvPenalty:       this.yesEvPenalty,
       maxDaysToClose:     this.maxDaysToClose,
       realizedTodayCents: this._realizedTodayCents,
       recentOrders:       this.log.slice(-20),
@@ -480,10 +552,12 @@ export class AutoTrader {
     if (this.calibratedEv) {
       estQ     = calibratedWinProb(limitPrice, calib);
       estNetEv = calibratedEvDollars(limitPrice, this.count, { ...feeBase, role }, calib);
-      if (estNetEv <= this.minEvDollars) {
+      const sideAdjEv = side === 'yes' ? estNetEv - this.yesEvPenalty : estNetEv; // de-prioritize YES (see _validateDirectOrder)
+      if (sideAdjEv <= this.minEvDollars) {
         console.log(
           `[auto-trader] skip ${trade.ticker} ${side.toUpperCase()} @ ${limitPrice}¢ — ` +
-          `calibrated EV $${estNetEv.toFixed(4)} (q=${(estQ * 100).toFixed(1)}%, fee $${fee.toFixed(4)}, ${role}) ` +
+          `calibrated EV $${estNetEv.toFixed(4)} (q=${(estQ * 100).toFixed(1)}%, fee $${fee.toFixed(4)}, ${role})` +
+          `${side === 'yes' && this.yesEvPenalty ? ` − YES penalty $${this.yesEvPenalty.toFixed(2)} = $${sideAdjEv.toFixed(4)}` : ''} ` +
           `<= $${this.minEvDollars.toFixed(2)} threshold`
         );
         return;
@@ -916,8 +990,14 @@ export class AutoTrader {
       const calib = { alpha: this.calibrationAlpha, psi: this.calibrationPsi };
       estQ     = calibratedWinProb(limitPrice, calib);
       estNetEv = calibratedEvDollars(limitPrice, count, feeOpts, calib);
-      if (estNetEv <= this.minEvDollars) {
-        return { ok: false, reason: `calibrated EV $${estNetEv.toFixed(4)} (q=${(estQ * 100).toFixed(1)}%) <= $${this.minEvDollars.toFixed(2)}` };
+      // Side weighting: the backtest shows YES-side realized edge runs ~1c below
+      // NO-side, so de-prioritize YES by holding it to a higher EV bar. NO is
+      // untouched; yesEvPenalty=0 disables this.
+      const sideAdjEv = side === 'yes' ? estNetEv - this.yesEvPenalty : estNetEv;
+      if (sideAdjEv <= this.minEvDollars) {
+        const pen = (side === 'yes' && this.yesEvPenalty)
+          ? ` − YES penalty $${this.yesEvPenalty.toFixed(2)} = $${sideAdjEv.toFixed(4)}` : '';
+        return { ok: false, reason: `calibrated EV $${estNetEv.toFixed(4)} (q=${(estQ * 100).toFixed(1)}%)${pen} <= $${this.minEvDollars.toFixed(2)}` };
       }
     }
 

@@ -8,6 +8,9 @@ const DB_PATH = process.env.DB_PATH
 
 let db;
 
+/** The shared DB handle initialised by initDb() (reuse instead of re-opening). */
+export function getDb() { return db; }
+
 export function initDb() {
   db = new Database(DB_PATH);
   db.pragma('journal_mode = WAL');

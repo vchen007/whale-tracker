@@ -1,0 +1,11 @@
+{
+  "alpha": -3.8147,
+  "psi": 0.0597,
+  "n": 36961,
+  "fittedAt": "2026-06-30T13:06:49.027Z",
+  "source": "auto-fit (whale-only sample)",
+  "prev": {
+    "alpha": -3.7658,
+    "psi": 0.0642
+  }
+}

@@ -10,13 +10,13 @@ import { loadPrivateKey } from './auth.js';
 import { KalshiClient } from './kalshiClient.js';
 import { AutoTrader } from '../../auto-trader/autoTrader.js';
 import { initDb, insertTrade, bulkInsert, getTradesSince, getTopMarkets, getOldestTradeTs, getNewestTradeTs, bulkInsertTitles, getTickerCategoryMap, getTickerTitleMap, getTickerMetaMap, getRecentlyActiveTickers, refreshMarketMeta, setEventActualStartTime, getUniqueSeries, updateCategoriesBySeries, getMissingTitleTickers, getTickersMissingCategory, bulkUpdateCategories, purgeSmallTrades, getAutoOrderSummary, getActiveKalshiTickersSince } from './db.js';
+import { runBacktest, reviewBets } from './backtest.js';
+import { notifyStrategyChange } from './notify.js';
 import { fetchTradeHistory, fetchCategories, fetchEventData, fetchTitlesByTickers } from './kalshiRest.js';
 import { fetchPolymarketTrades } from './polymarketRest.js';
 import { startSchedulePoller, findKalshiGameStart, findPolymarketGameStart } from './sportsApi.js';
 import authMiddleware from './authMiddleware.js';
 import { KALSHI_REST_BASE, KALSHI_TRADING_BASE, logKalshiEnv, DATA_IS_DEMO, IS_DEMO } from './kalshiEnv.js';
-import { scanForArbs } from './arbDetector.js';
-import { notifyArb } from './notify.js';
 
 // ── Config ────────────────────────────────────────────────────────────────────
 
@@ -172,6 +172,7 @@ const autoTrader = new AutoTrader({
   calibrationAlpha: Number(process.env.AUTO_TRADER_CALIBRATION_ALPHA ?? -1.736),
   calibrationPsi:   Number(process.env.AUTO_TRADER_CALIBRATION_PSI ?? 0.034),
   minEvDollars:     Number(process.env.AUTO_TRADER_MIN_EV ?? 0),
+  yesEvPenalty:     Number(process.env.AUTO_TRADER_YES_EV_PENALTY ?? 0),
   // Timing rail (agent orders): reject markets closing further out than this —
   // the paper's price calibration only holds within ~10 days of close. <=0 disables.
   maxDaysToClose:   Number(process.env.AUTO_TRADER_MAX_DAYS_TO_CLOSE ?? 10),
@@ -371,6 +372,24 @@ app.get('/auto-trader/pnl', { preHandler: [app.authenticate] }, async () => getA
 // Trigger settlement check on demand
 app.post('/auto-trader/settle', { preHandler: [app.authenticate], ...autoTraderRateLimit }, async () => autoTrader.checkSettlements());
 
+// Hot-reload the adaptive EV calibration from calibration.json (recalibrate.js
+// calls this after an auto-applied fit, so no restart is needed).
+app.post('/auto-trader/reload-calibration', { preHandler: [app.authenticate] }, async () => autoTrader.reloadCalibration());
+
+// Daily strategy agent applies allowlisted knob changes here. Guardrails
+// (allowlist, bounds, step caps, risk-caps-untouchable) are enforced in
+// autoTrader.setParam — the agent only proposes. Body: { changes: { knob: value } }.
+app.post('/auto-trader/set-params', { preHandler: [app.authenticate], ...autoTraderRateLimit }, async (req) => {
+  const changes = (req.body && typeof req.body.changes === 'object') ? req.body.changes : {};
+  const applied = {};
+  for (const [k, v] of Object.entries(changes)) applied[k] = autoTrader.setParam(k, v);
+  const ok = Object.values(applied).filter((r) => r.ok);
+  if (ok.length) {
+    notifyStrategyChange({ applied, reason: req.body?.reason ?? null }).catch((e) => console.error('[notify] strategy email error', e.message));
+  }
+  return { applied, status: autoTrader.status() };
+});
+
 // Market discovery for the agent: markets with PROVEN taker flow (tickers that
 // actually traded recently, from our own feed DB), enriched with their current
 // book. A resting maker order only fills where takers exist, so recent-trade
@@ -470,6 +489,20 @@ app.post('/agent/tool', { preHandler: [app.authenticate], config: { rateLimit: {
   try {
     if (action === 'get_status') return autoTrader.status();
     if (action === 'get_pnl')    return getAutoOrderSummary();
+    if (action === 'query_backtest') {
+      return runBacktest({
+        groupBy:      req.body?.group_by,
+        category:     req.body?.category ?? null,
+        seriesPrefix: req.body?.series_prefix ?? null,
+        side:         req.body?.side ?? null,
+        minPrice:     req.body?.min_price != null ? Number(req.body.min_price) : 1,
+        maxPrice:     req.body?.max_price != null ? Number(req.body.max_price) : 99,
+        minSampleN:   req.body?.min_sample != null ? Number(req.body.min_sample) : 30,
+      });
+    }
+    if (action === 'review_bets') {
+      return reviewBets({ sinceDays: req.body?.since_days != null ? Number(req.body.since_days) : 30 });
+    }
     if (action === 'find_markets') {
       return await findMarkets({
         limit:          Number(req.body?.limit ?? 15),
@@ -673,31 +706,6 @@ setInterval(async () => {
     console.error('[auto-trader] settlement check error:', err.message);
   }
 }, 15 * 60 * 1000);
-
-// Periodic cross-venue arb scan: every 5 minutes, compare recent Kalshi vs
-// Polymarket last-trade prices for the same event and email candidates with a
-// net edge after the Kalshi taker fee. Detection only — never places orders.
-// Prod-data only (demo has no real cross-venue overlap); ARB_SCAN_ENABLED=false disables.
-const arbAlerted = new Map(); // pairKey → last alert ms (suppress repeats for 6h)
-if (!DATA_IS_DEMO && process.env.ARB_SCAN_ENABLED !== 'false') setInterval(async () => {
-  try {
-    const { candidates } = scanForArbs({
-      windowHours: Number(process.env.ARB_WINDOW_HOURS ?? 6),
-      minNetCents: Number(process.env.ARB_MIN_NET_CENTS ?? 4),
-      matchThreshold: Number(process.env.ARB_MATCH_THRESHOLD ?? 0.7),
-    });
-    for (const c of candidates) {
-      const key = `${c.kalshiTicker}|${c.polyTicker}`;
-      const last = arbAlerted.get(key) ?? 0;
-      if (Date.now() - last < 6 * 3600_000) continue;
-      arbAlerted.set(key, Date.now());
-      console.log(`[arb] 💹 ${c.netCents}¢ net: ${c.kalshiTicker} ↔ ${c.polyTicker} (${c.direction})`);
-      notifyArb(c).catch((err) => console.error('[arb] email error:', err.message));
-    }
-  } catch (err) {
-    console.error('[arb] scan error:', err.message);
-  }
-}, 5 * 60 * 1000);
 
 // Periodic title backfill: every 5 minutes, fetch titles for any tickers that arrived since startup.
 // Uses direct /markets/{ticker} endpoint which always has the title (event endpoint may not).

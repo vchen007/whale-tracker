@@ -127,40 +127,6 @@ export function buildTradeEmail(entry) {
 }
 
 /**
- * Email a cross-venue arbitrage candidate (detection only — nothing executed).
- * Subject leads with [ARB] (distinct from the [DEMO]/[LIVE] trade tags since
- * this concerns market data, not an account action).
- */
-export async function notifyArb(c) {
-  if (!process.env.RESEND_API_KEY) {
-    console.warn('[notify] RESEND_API_KEY not set — skipping arb email');
-    return;
-  }
-  const subject = `[ARB] 💹 ${c.netCents}¢ net gap — ${c.kalshiTicker}`;
-  const html =
-    `<div style="font-family:sans-serif;max-width:520px">` +
-      `<div style="margin-bottom:10px"><span style="background:#ddd6fe;color:#5b21b6;padding:2px 8px;border-radius:4px;font-weight:bold">ARB · cross-venue candidate</span></div>` +
-      `<h2 style="margin:0 0 8px">💹 ${c.grossCents}¢ gross / ${c.netCents}¢ net per $1</h2>` +
-      `<table style="font-family:monospace;border-collapse:collapse">` +
-        row('Kalshi', `${c.kalshiTicker} — ${c.kalshiTitle} (YES ${c.kalshiYesCents}¢, ${c.kalshiAgeMin}m old)`) +
-        row('Polymarket', `${c.polyTicker} — ${c.polyTitle} (YES ${c.polyYesCents}¢, ${c.polyAgeMin}m old)`) +
-        row('Direction', c.direction) +
-        row('Title match', `${Math.round(c.matchScore * 100)}%`) +
-      `</table>` +
-      `<p style="color:#92400e"><b>Before acting:</b> re-check both live order books (these are last-trade prices), ` +
-      `confirm the two markets are truly the same event, and compare <b>settlement criteria</b> on both venues — ` +
-      `resolution mismatches are the main way "arbs" lose.</p>` +
-    `</div>`;
-  const TO   = process.env.NOTIFY_EMAIL ?? 'claude_bot23@proton.me';
-  const FROM = process.env.NOTIFY_FROM  ?? 'Whale Tracker <onboarding@resend.dev>';
-  try {
-    await getResend().emails.send({ from: FROM, to: TO, subject, html });
-  } catch (err) {
-    console.error('[notify] arb email error:', err.message);
-  }
-}
-
-/**
  * Send an email notification after an auto-trader event (order, close, kill-switch).
  * @param {object} entry - log entry from AutoTrader
  */
@@ -178,5 +144,76 @@ export async function notifyTrade(entry) {
     await getResend().emails.send({ from: FROM, to: TO, subject, html });
   } catch (err) {
     console.error('[notify] email error:', err.message);
+  }
+}
+
+/**
+ * Email the outcome of an adaptive-calibration run (#2): applied, held for
+ * review, or aborted. `report` is the object built by recalibrate.js.
+ */
+export async function notifyCalibration(report) {
+  if (!process.env.RESEND_API_KEY) {
+    console.warn('[notify] RESEND_API_KEY not set — skipping calibration email');
+    return;
+  }
+  const TO   = process.env.NOTIFY_EMAIL ?? 'claude_bot23@proton.me';
+  const FROM = process.env.NOTIFY_FROM  ?? 'Whale Tracker <onboarding@resend.dev>';
+
+  const icon = report.status === 'apply' ? '✅ APPLIED'
+             : report.status === 'hold'  ? '⏸️ HELD for review'
+             : '🚫 ABORTED';
+  const { proposal: p, current: c } = report;
+  const subject = `[${ENV_TAG}] Calibration ${report.status === 'apply' ? 'updated' : report.status} — α=${p.alpha} ψ=${p.psi}`;
+  const html = `
+    <div style="font-family:system-ui,sans-serif">
+      <p>${ENV_BADGE} &nbsp; <b>EV-gate calibration: ${icon}</b></p>
+      <table style="border-collapse:collapse">
+        ${row('Decision', `${report.status} — ${report.reason}`)}
+        ${row('Proposed (whale fit)', `α=${p.alpha}, ψ=${p.psi}  (n=${p.n} settled)`)}
+        ${row('Current (in use)',     `α=${c.alpha}, ψ=${c.psi}`)}
+        ${row('Sample',  report.source)}
+        ${row('When',    report.fittedAt)}
+      </table>
+      ${report.status === 'hold'
+        ? `<p style="color:#92400e">Not applied. To accept, set these in calibration.json (or reply to apply):<br>
+           <code>{"alpha": ${p.alpha}, "psi": ${p.psi}, "n": ${p.n}}</code></p>`
+        : ''}
+    </div>`;
+
+  try {
+    await getResend().emails.send({ from: FROM, to: TO, subject, html });
+  } catch (err) {
+    console.error('[notify] calibration email error:', err.message);
+  }
+}
+
+/**
+ * Email the strategy knob changes the daily agent applied (or tried to).
+ * `report.applied` is a map of knob → setParam result.
+ */
+export async function notifyStrategyChange(report) {
+  if (!process.env.RESEND_API_KEY) {
+    console.warn('[notify] RESEND_API_KEY not set — skipping strategy email');
+    return;
+  }
+  const TO   = process.env.NOTIFY_EMAIL ?? 'claude_bot23@proton.me';
+  const FROM = process.env.NOTIFY_FROM  ?? 'Whale Tracker <onboarding@resend.dev>';
+
+  const rows = Object.entries(report.applied || {}).map(([k, r]) =>
+    r.ok ? row(k, `${r.prev} → <b>${r.now}</b>  ✅`)
+         : row(k, `<span style="color:#991b1b">unchanged — ${r.reason}</span>`)).join('');
+  const nApplied = Object.values(report.applied || {}).filter((r) => r.ok).length;
+  const subject = `[${ENV_TAG}] Daily strategy agent — ${nApplied} change${nApplied === 1 ? '' : 's'} applied`;
+  const html = `
+    <div style="font-family:system-ui,sans-serif">
+      <p>${ENV_BADGE} &nbsp; <b>Daily strategy review — ${nApplied} knob change(s) applied</b></p>
+      ${report.reason ? `<p><i>${report.reason}</i></p>` : ''}
+      <table style="border-collapse:collapse">${rows}</table>
+      <p style="color:#666;font-size:12px">Risk caps (capital, daily-loss, position limits) are not agent-tunable.</p>
+    </div>`;
+  try {
+    await getResend().emails.send({ from: FROM, to: TO, subject, html });
+  } catch (err) {
+    console.error('[notify] strategy email error:', err.message);
   }
 }
