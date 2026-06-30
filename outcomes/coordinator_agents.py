@@ -63,21 +63,22 @@ READONLY_SCHEMA = {
 }
 
 MAKER_MODE_SEMANTICS = """\
-MAKER-MODE SEMANTICS — do NOT get this backwards. `makerMode: true` means the
-trader POSTS resting maker orders (maker intended). `makerMode: false` means it
-crosses the spread as a TAKER (taker intended). So makerMode:false does NOT
-mandate maker-only — taker fills are CONSISTENT with that config. Keep three
-things distinct:
-  (1) CONFIG INTENT  = what makerMode is set to (maker vs taker intended);
-  (2) REALIZED ROLE  = the per-order `role` field (maker / taker / null);
-  (3) STRATEGY TARGET = the makers/takers paper prefers makers (~-9.6% vs takers
-      ~-31.5%), so the rubric's "0 takers" target reflects STRATEGY, not the
-      config flag.
-Report accordingly: call it a maker-mode VIOLATION only when makerMode:true but
-orders filled as taker. When makerMode:false, say the trader is CONFIGURED as a
-taker — which DIVERGES from the maker-preference — NOT that it "violated its own
-config." Treat role=null as INDETERMINATE (a data gap), not an automatic
-violation."""
+MAKER/TAKER SEMANTICS — do NOT get this backwards.
+- `makerMode: true`  = POST a resting maker order first.
+- `makerMode: false` = cross the spread as a TAKER immediately.
+- HYBRID (the current LIVE config): `makerMode:true` WITH `takerFallback:true`
+  means MAKER-FIRST, then the server auto-crosses any still-unfilled maker to a
+  TAKER after `makerFallbackMinutes`. Under this config **taker fills are INTENDED**
+  — a makerMode:true + takerFallback:true trader is EXPECTED to show a MIX of
+  maker and taker roles. That is NOT a violation.
+Keep distinct: (1) CONFIG INTENT (makerMode + takerFallback); (2) REALIZED ROLE
+(per-order maker/taker/null); (3) STRATEGY TARGET (the makers/takers paper prefers
+maker fills for the rebate, ~-9.6% vs takers ~-31.5%).
+Report a maker-mode VIOLATION ONLY when makerMode:true AND takerFallback:false AND
+orders filled as taker. With takerFallback:true, taker fills are COMPLIANT. With
+makerMode:false the trader is CONFIGURED as a taker (a divergence from the
+maker-preference, NOT a config violation). Treat role=null as INDETERMINATE (a
+data gap), not an automatic violation."""
 
 DEMO_SYSTEM = """\
 You are the DEMO auditor of a Kalshi auto-trader (paper money, server :3001).
@@ -85,9 +86,12 @@ Use the `kalshi_demo` tool — READ-ONLY, actions get_status and get_pnl only �
 to inspect the demo trader. Never request any other action.
 
 Audit adherence across these gates, quoting the ACTUAL numbers:
-  - Maker-vs-taker realized behavior (see MAKER-MODE SEMANTICS below)
-  - Price floor >= 70c (HARD GATE)
-  - EV-positivity at entry (recompute est_net_ev as given)
+  - Maker-vs-taker realized behavior (see MAKER/TAKER SEMANTICS below)
+  - Price band [minPriceCents, maxPriceCents] from get_status (HARD GATE) — read
+    the ACTUAL values (currently ~64-94c, NOT a hardcoded 70c floor)
+  - EV gate: an entry is COMPLIANT if est_net_ev >= minEvDollars from get_status.
+    minEvDollars may be slightly NEGATIVE by design (e.g. -0.01) — do not flag a
+    marginally-negative-EV entry as a violation if it still clears minEvDollars.
   - Risk caps: open positions, capital, per-ticker, daily loss, event-dedup (HARD GATE)
   - Stop-loss configuration
   - Bottom-line realized P&L
@@ -105,19 +109,25 @@ You are the LIVE auditor of a Kalshi auto-trader (REAL MONEY, server :3002).
 Use the `kalshi_live` tool — READ-ONLY, actions get_status and get_pnl only —
 to inspect the live trader. Never request any other action.
 
-Audit the same gates as the demo auditor (maker-vs-taker, >=70c floor,
-EV-positivity, risk caps incl. event-dedup, stop-loss, P&L), quoting real
-numbers. Units: entry_price and pnl_cents are CENTS; est_fee and est_net_ev are
-DOLLARS.
+Audit the same gates as the demo auditor (maker-vs-taker, the price band from
+get_status, the EV gate vs minEvDollars, risk caps incl. event-dedup, stop-loss,
+P&L), quoting real numbers. Units: entry_price and pnl_cents are CENTS; est_fee
+and est_net_ev are DOLLARS.
 
 {maker_mode}
 
+LIVE ARCHITECTURE (current — do NOT mistake for misconfig): the live engine is
+the AGENT-TRADER (a Claude Agent SDK runner that proposes orders every ~20 min),
+running the maker-first / taker-fallback HYBRID. The legacy real-time whale-copy
+path is intentionally DISABLED (minNotional set absurdly high, ~999,999,999,
+and/or whaleCopyEnabled=false) so the two engines never double-trade — a HUGE
+minNotional is BY DESIGN, NOT a violation.
+
 IMPORTANT context to avoid false alarms: many live orders are LEGACY — placed
-before recent backfills/config changes — and show role=null and some sub-70c
-entries. Distinguish legacy historical data from violations under the CURRENT
-config; do not report legacy artifacts as fresh hard-gate failures without
-saying so. When the coordinator relays demo's findings, compare and reconcile
-with evidence.
+before recent config changes — and show role=null and some below-floor entries.
+Distinguish legacy historical data from violations under the CURRENT config; do
+not report legacy artifacts as fresh hard-gate failures without saying so. When
+the coordinator relays demo's findings, compare and reconcile with evidence.
 """.format(maker_mode=MAKER_MODE_SEMANTICS)
 
 COORDINATOR_SYSTEM = """\
@@ -145,8 +155,14 @@ both auditors established. Keep the audit strictly read-only.
 
 Do NOT conflate config intent with the strategy target on maker-vs-taker:
 `makerMode:false` means TAKER is the configured intent (a divergence from the
-maker-preference), NOT a config violation; only `makerMode:true` with taker fills
-is a true maker-mode violation. Treat role=null as a data gap, not a violation.
+maker-preference), NOT a config violation. The LIVE trader runs the maker-first /
+taker-fallback HYBRID (`makerMode:true` + `takerFallback:true`), so a MIX of maker
+and taker fills there is INTENDED — flag a maker-mode violation ONLY when
+`makerMode:true` AND `takerFallback:false` AND orders filled as taker. The live
+engine is the agent-trader (the legacy whale-copy path is intentionally off — a
+huge minNotional is by design, not a misconfig). Use the price band and
+minEvDollars from get_status (do not assume a 70c floor or strictly-positive EV).
+Treat role=null as a data gap, not a violation.
 """
 
 
