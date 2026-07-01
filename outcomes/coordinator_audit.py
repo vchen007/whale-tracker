@@ -40,7 +40,7 @@ from pathlib import Path
 import requests
 
 try:
-    from anthropic import Anthropic
+    from anthropic import Anthropic, APIConnectionError, APITimeoutError
 except ImportError:
     sys.exit("Missing dependency. Run:  pip install anthropic")
 
@@ -60,6 +60,30 @@ def require_env(name: str) -> str:
 
 def now_iso() -> str:
     return datetime.now(timezone.utc).isoformat()
+
+
+def extract_cost(session) -> tuple[float | None, dict | None]:
+    """Best-effort cost/usage extraction from a retrieved Sessions object.
+
+    The Sessions beta doesn't document a stable field name for this, so probe
+    the plausible spots defensively instead of assuming one and crashing when
+    it's absent. `session.usage`, if present, is the SESSION-level total —
+    i.e. the coordinator's own turns plus both spawned leaf-auditor threads,
+    since they all run inside this one session.
+    """
+    cost = getattr(session, "total_cost_usd", None)
+    usage = getattr(session, "usage", None)
+    if cost is None and usage is not None:
+        cost = getattr(usage, "total_cost_usd", None) or getattr(usage, "cost_usd", None)
+    usage_dict = None
+    if usage is not None:
+        usage_dict = {
+            "input_tokens": getattr(usage, "input_tokens", None),
+            "output_tokens": getattr(usage, "output_tokens", None),
+            "cache_read_input_tokens": getattr(usage, "cache_read_input_tokens", None),
+            "cache_creation_input_tokens": getattr(usage, "cache_creation_input_tokens", None),
+        }
+    return cost, usage_dict
 
 
 def execute_tool(tool_name: str, action_input: dict, servers: dict, auth_token: str) -> dict:
@@ -129,7 +153,15 @@ def main():
     servers = {"kalshi_demo": args.demo_url, "kalshi_live": args.live_url}
 
     date = datetime.now().strftime("%Y-%m-%d")
-    client = Anthropic(api_key=api_key, default_headers={"anthropic-beta": BETA})
+    # max_retries: the drive loop polls events.list every few seconds for up to
+    # `timeout` seconds (hundreds of calls). A single transient getaddrinfo/DNS
+    # blip on any one used to crash the whole audit (2026-07-01). The SDK retries
+    # connection errors with exponential backoff on every request.
+    client = Anthropic(api_key=api_key, max_retries=8,
+                       default_headers={"anthropic-beta": BETA})
+
+    coordinator_agent = client.beta.agents.retrieve(args.coordinator_id)
+    model_id = getattr(getattr(coordinator_agent, "model", None), "id", None) or "unknown"
 
     session = client.beta.sessions.create(
         agent=args.coordinator_id, environment_id=environment_id,
@@ -160,11 +192,28 @@ def main():
     types = ["agent.custom_tool_use", "agent.message",
              "agent.thread_message_sent", "agent.thread_message_received"]
 
+    consecutive_conn_errors = 0
     while time.time() < deadline:
         new_events = 0
-        for ev in client.beta.sessions.events.list(
-            sid, types=types, order="asc", created_at_gt=cursor
-        ):
+        # Materialize the page inside a guard so one transient DNS/connection
+        # blip (after the client's own retries are exhausted) skips this poll
+        # instead of crashing the whole run. Cursor is unchanged on failure, so
+        # the next tick simply re-fetches from the same point.
+        try:
+            page = list(client.beta.sessions.events.list(
+                sid, types=types, order="asc", created_at_gt=cursor
+            ))
+        except (APIConnectionError, APITimeoutError) as e:
+            consecutive_conn_errors += 1
+            print(f"⚠️  transient API error (#{consecutive_conn_errors}, "
+                  f"{type(e).__name__}) on events.list — retry in {args.poll:.0f}s")
+            if consecutive_conn_errors >= 20:
+                print("⚠️  too many consecutive connection errors — aborting drive loop.")
+                break
+            time.sleep(args.poll)
+            continue
+
+        for ev in page:
             new_events += 1
             cursor = ev.processed_at.isoformat()
 
@@ -201,7 +250,19 @@ def main():
                 if text.strip():
                     transcript.append(f"\n### {ev.type}\n\n{text}\n")
 
-        status = client.beta.sessions.retrieve(sid).status
+        try:
+            status = client.beta.sessions.retrieve(sid).status
+        except (APIConnectionError, APITimeoutError) as e:
+            consecutive_conn_errors += 1
+            print(f"⚠️  transient API error (#{consecutive_conn_errors}, "
+                  f"{type(e).__name__}) on session.retrieve — retry in {args.poll:.0f}s")
+            if consecutive_conn_errors >= 20:
+                print("⚠️  too many consecutive connection errors — aborting drive loop.")
+                break
+            time.sleep(args.poll)
+            continue
+        consecutive_conn_errors = 0
+
         if status == "terminated":
             print("Session terminated.")
             break
@@ -214,6 +275,17 @@ def main():
         time.sleep(args.poll)
     else:
         print(f"⚠️  Hit overall timeout ({args.timeout:.0f}s).")
+
+    # ── Cost/usage ────────────────────────────────────────────────────────────
+    # One extra retrieve, after the session is done, so this reads the final
+    # session-level total rather than a mid-run snapshot.
+    cost, usage = extract_cost(client.beta.sessions.retrieve(sid))
+    if cost is not None:
+        print(f"\n[coordinator-audit] cost: ${cost:.4f}  model={model_id}  session={sid}")
+    else:
+        print(f"\n[coordinator-audit] cost: unavailable from Sessions API  "
+              f"model={model_id}  session={sid}"
+              + (f"  usage={json.dumps(usage)}" if usage else ""))
 
     # ── Capture the joint report ─────────────────────────────────────────────
     # The coordinator emits the full report as one large message, but may ALSO
@@ -234,16 +306,22 @@ def main():
     else:
         report = ""
 
+    cost_note = f"cost ${cost:.4f}" if cost is not None else "cost unavailable"
+    header = (f"<!-- Auto-generated by coordinator_audit.py on {now_iso()} "
+              f"(model {model_id}, {cost_note}, session {sid}). "
+              f"Read-only audit — no config was changed. -->\n\n")
+
     OUTPUTS_DIR.mkdir(parents=True, exist_ok=True)
     out_path = Path(args.out) if args.out else OUTPUTS_DIR / f"cross_audit_{date}.md"
     transcript_path = OUTPUTS_DIR / f"cross_audit_{date}.transcript.md"
-    out_path.write_text(report + "\n")
+    out_path.write_text((header + report if report.strip() else report) + "\n")
+    transcript.append(f"\n---\n\n{cost_note}, model {model_id}, session {sid}\n")
     transcript_path.write_text("\n".join(transcript))
     print(f"\n↓ joint report : {out_path}")
     print(f"↓ transcript   : {transcript_path}")
 
     ok = bool(report.strip())
-    print(f"\nDone. Joint report {'captured' if ok else 'EMPTY — check timeouts/coordinator output'}.")
+    print(f"\nDone. Joint report {'captured' if ok else 'EMPTY — check timeouts/coordinator output'}. {cost_note}.")
     sys.exit(0 if ok else 1)
 
 
