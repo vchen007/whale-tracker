@@ -84,6 +84,25 @@ export function buildTradeEmail(entry) {
       row('Time', entry.ts),
     ];
 
+  // 2b) Fill-verification against /portfolio/positions
+  } else if (entry.action === 'unfilled' || entry.action === 'drift') {
+    const phantom = entry.action === 'unfilled';
+    emoji   = phantom ? '👻' : '⚠️';
+    subject = phantom
+      ? `👻 Unfilled ${entry.ticker} ${side(entry)} — no account position`
+      : `⚠️ Position drift ${entry.ticker} ${side(entry)}`;
+    heading = phantom
+      ? 'Recorded fill not found on account — marked unfilled'
+      : 'Account position disagrees with recorded orders';
+    rows = [
+      row('Market', entry.ticker),
+      row('Side', side(entry)),
+      row('Price', `${entry.price}¢`),
+      row('Contracts', entry.count),
+      row('Detail', entry.status ?? '—', 'color:red'),
+      row('Time', entry.ts),
+    ];
+
   // 3) Order accepted — taker fill ('placed') or maker order resting ('resting')
   } else if (entry.status === 'placed' || entry.status === 'resting') {
     const resting = entry.status === 'resting';

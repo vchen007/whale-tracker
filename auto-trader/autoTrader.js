@@ -26,6 +26,10 @@ const REST_BASE  = KALSHI_TRADING_BASE;
 // Signing path is host-independent — same /trade-api/v2 path on demo and prod.
 const ORDER_PATH = '/trade-api/v2/portfolio/orders';               // list/cancel (still live)
 const CREATE_ORDER_PATH = '/trade-api/v2/portfolio/events/orders'; // create (the v1 path 410s now)
+const POSITIONS_PATH = '/trade-api/v2/portfolio/positions';        // account truth: net position per market
+const FILL_CONFIRM_ATTEMPTS = 4;      // positions re-checks before a taker is declared unfilled
+const FILL_CONFIRM_DELAY_MS = 2500;   // gap between checks (~7.5s total) to absorb fill-propagation lag
+const PHANTOM_MIN_AGE_MS = 10 * 60_000; // an 'executed' order with no position older than this = phantom (safe: real fills show a position within seconds)
 // Account tag for log lines (mirrors the email tagging).
 const ENV_TAG = IS_DEMO ? 'DEMO' : 'LIVE';
 
@@ -641,7 +645,63 @@ export class AutoTrader {
       }
     }
 
-    notifyTrade(entry).catch((err) => console.error('[notify] unhandled error', err.message));
+    // Gate the taker "filled" email on a real /portfolio/positions confirmation
+    // so Resend never sends a false fill. Maker 'resting' and failure emails are
+    // unchanged. Runs async (unawaited) so it never adds latency to the trade loop.
+    if (entry.status === 'placed') {
+      this._confirmTakerFillThenNotify(entry).catch((err) => console.error('[notify] unhandled error', err.message));
+    } else {
+      notifyTrade(entry).catch((err) => console.error('[notify] unhandled error', err.message));
+    }
+  }
+
+  /**
+   * Confirm a taker order actually filled by checking the account's real
+   * /portfolio/positions, THEN send the appropriate email — so a "filled" email
+   * is never created for an order that didn't land. Called unawaited from
+   * _placeOrder; retries briefly to absorb position-propagation lag.
+   *
+   *   filled on account     → normal "Order placed" email.
+   *   absent after retries   → correct the record (mark unfilled) + "unfilled" email.
+   *   positions API failing  → fail open: send the normal email, change nothing
+   *                            (an infra blip must not drop a real fill).
+   */
+  async _confirmTakerFillThenNotify(entry) {
+    const expectSign = entry.side === 'yes' ? 1 : -1;
+    let queried = false;
+    for (let i = 0; i < FILL_CONFIRM_ATTEMPTS; i++) {
+      try {
+        const positions = await this.fetchPositions();
+        queried = true;
+        const net = positions.get(entry.ticker) ?? 0;      // signed net YES contracts on the account
+        if ((expectSign > 0 ? net : -net) > 0) {           // account holds a position our way → filled
+          await notifyTrade(entry);
+          return;
+        }
+      } catch (err) {
+        console.error('[auto-trader] fill-confirm positions error:', err.message);
+      }
+      if (i < FILL_CONFIRM_ATTEMPTS - 1) await new Promise((r) => setTimeout(r, FILL_CONFIRM_DELAY_MS));
+    }
+
+    if (!queried) {
+      // Never got a clean positions response — don't punish a real fill for an
+      // infra blip. Fail open: send the normal email, keep the record as-is.
+      console.warn(`[auto-trader] ⚠️  ${entry.ticker} ${entry.side.toUpperCase()} fill unverifiable (positions API) — sending placed email unconfirmed`);
+      await notifyTrade(entry);
+      return;
+    }
+
+    // Queried cleanly but the account holds no position our way → it did not
+    // fill. Correct the record and simply SEND NO "filled" email. (No 'unfilled'
+    // email either — those flooded Resend; the correction is logged only.) This
+    // runs ~7.5s after placement, so the market can't have settled — a 0 here is
+    // a genuine non-fill, making this correction safe (unlike the periodic sweep).
+    cancelAutoOrderRecord(entry.clientOrderId, {
+      ts: new Date().toISOString(),
+      reason: 'unfilled: absent from /portfolio/positions (pre-email check)',
+    });
+    console.warn(`[auto-trader] ⚠️  ${entry.ticker} ${entry.side.toUpperCase()} x${entry.count} @ ${entry.price}¢ did NOT fill — no account position; record corrected, no email sent`);
   }
 
   /**
@@ -660,6 +720,17 @@ export class AutoTrader {
     const ttlMs = this.unfilledTtlMinutes * 60_000;
     let filled = 0, canceled = 0;
 
+    // Fetch the account's real positions once per sweep to cross-check exchange
+    // 'executed' status before promoting to a held position (the demo sandbox can
+    // report 'executed' with no actual fill → phantom). null = fetch failed, in
+    // which case we fall back to trusting the exchange so a real fill isn't blocked.
+    let positions = null;
+    try {
+      positions = await this.fetchPositions();
+    } catch (err) {
+      console.error('[auto-trader] checkOpenOrders — positions fetch failed, trusting exchange status:', err.message);
+    }
+
     for (const o of resting) {
       if (!o.order_id) continue; // can't reconcile without a Kalshi order id
       try {
@@ -676,8 +747,30 @@ export class AutoTrader {
         const match  = (data.orders || []).find((x) => x.order_id === o.order_id);
         const status = (match?.status ?? '').toLowerCase();
 
-        // Filled → promote to a held position.
+        // Filled per the exchange → cross-check the account actually holds the
+        // position before promoting (guards against phantom 'executed' on demo).
         if (status === 'executed') {
+          const expectSign = o.side === 'yes' ? 1 : -1;
+          const net = positions ? (positions.get(o.ticker) ?? 0) : null;
+          const heldOurWay = net === null ? true : (expectSign > 0 ? net : -net) > 0;
+
+          if (!heldOurWay) {
+            const age = Date.now() - new Date(o.placed_ts).getTime();
+            if (age >= PHANTOM_MIN_AGE_MS) {
+              // Exchange says executed but the account holds no position our way,
+              // and it's far older than any fill-propagation lag → phantom. Cancel
+              // the record (DB-only, no email) so it stops being reconsidered.
+              cancelAutoOrderRecord(o.client_order_id, {
+                ts: new Date().toISOString(),
+                reason: 'phantom: executed on exchange but no account position',
+              });
+              canceled++;
+              console.warn(`[auto-trader] 👻 ${o.ticker} ${o.side.toUpperCase()} reported executed but NO account position (aged) — canceled as phantom, not promoted`);
+            }
+            // else: too fresh — position may still be propagating; re-check next sweep.
+            continue;
+          }
+
           markAutoOrderFilled(o.client_order_id);
           filled++;
           console.log(`[auto-trader] 🎯 filled ${o.ticker} ${o.side.toUpperCase()} @ ${o.entry_price}¢`);
@@ -739,6 +832,105 @@ export class AutoTrader {
       console.log(`[auto-trader] reconcile: ${filled} filled, ${canceled} canceled of ${resting.length} resting`);
     }
     return { checked: resting.length, filled, canceled };
+  }
+
+  /**
+   * Fetch the account's real net position per market from /portfolio/positions.
+   * Returns Map(ticker -> net YES contracts, signed): positive = long YES,
+   * negative = short YES (i.e. holding NO). Zero-position markets are omitted.
+   */
+  async fetchPositions() {
+    const out = new Map();
+    let cursor = '';
+    let pages = 0;
+    do {
+      const qs = cursor ? `?limit=200&cursor=${encodeURIComponent(cursor)}` : '?limit=200';
+      const res = await fetch(`${REST_BASE}/portfolio/positions${qs}`, {
+        headers: authHeaders(this.privateKey, this.apiKeyId, POSITIONS_PATH, 'GET'),
+      });
+      if (!res.ok) throw new Error(`positions HTTP ${res.status}`);
+      const data = await res.json();
+      for (const p of (data.market_positions || [])) {
+        const contracts = parseFloat(p.position_fp ?? p.position ?? 0);
+        if (contracts !== 0) out.set(p.ticker, contracts);
+      }
+      cursor = data.cursor || '';
+    } while (cursor && ++pages < 50);
+    return out;
+  }
+
+  /**
+   * OBSERVE-ONLY periodic check of believed-held orders ('placed') against the
+   * account's actual /portfolio/positions. Logs mismatches; does NOT change
+   * records and sends NO email.
+   *
+   * Why observe-only: a SETTLED position also reads as 0 here, and this sweep
+   * runs more often than settlement reconcile — so it cannot distinguish "never
+   * filled" from "filled then settled". An earlier version auto-canceled the
+   * 0-position case, which dropped real settled wins/losses and flooded Resend.
+   * Genuine non-fills are caught safely at placement time by
+   * _confirmTakerFillThenNotify (runs seconds after the order, before any
+   * market can settle). This sweep is now purely diagnostic.
+   */
+  async verifyFilledPositions() {
+    const held = getOpenAutoOrders(); // status = 'placed'
+    if (held.length === 0) return { checked: 0, confirmed: 0, flagged: 0, drift: 0, untracked: 0 };
+
+    let positions;
+    try {
+      positions = await this.fetchPositions();
+    } catch (err) {
+      console.error('[auto-trader] positions verify — fetch failed:', err.message);
+      return { checked: held.length, error: err.message };
+    }
+
+    const CONFIRM_DELAY_MS = 5 * 60_000; // takers need a moment to settle into positions
+    const now = Date.now();
+
+    // Group believed-held orders by ticker (a ticker may carry both sides).
+    const byTicker = new Map();
+    for (const o of held) {
+      if (!byTicker.has(o.ticker)) byTicker.set(o.ticker, []);
+      byTicker.get(o.ticker).push(o);
+    }
+
+    let confirmed = 0, flagged = 0, drift = 0;
+    for (const [ticker, orders] of byTicker) {
+      const net = positions.get(ticker) ?? 0;                 // signed YES contracts on the account
+      const expNet = orders.reduce((s, o) => s + (o.side === 'yes' ? o.count : -o.count), 0);
+      const oldestAge = Math.max(...orders.map((o) => now - new Date(o.placed_ts).getTime()));
+
+      if (Math.abs(net) < 1e-9) {
+        // No account position — could be "never filled" OR "filled then settled"
+        // (both read as 0). LOG ONLY: never cancel here, never email. Settlement
+        // reconcile handles the settled case; the placement-time check handles
+        // the genuine-non-fill case.
+        if (oldestAge < CONFIRM_DELAY_MS) continue;
+        for (const o of orders) {
+          flagged++;
+          console.warn(`[auto-trader] ℹ️  ${o.ticker} ${o.side.toUpperCase()} x${o.count} @ ${o.entry_price}¢ has no account position (settled or unfilled) — leaving for settlement reconcile`);
+        }
+      } else if ((Math.sign(net) !== Math.sign(expNet) && expNet !== 0) || Math.abs(net) + 1e-9 < Math.abs(expNet)) {
+        // Account holds a position, but the wrong side or fewer contracts than we
+        // recorded. Ambiguous with aggregation — LOG ONLY, no email, no change.
+        drift++;
+        console.warn(`[auto-trader] ⚠️  position drift ${ticker}: account net ${net} YES-contracts, DB expects ${expNet}`);
+      } else {
+        confirmed += orders.length;
+      }
+    }
+
+    // Reverse check (informational only): positions the account holds with no matching 'placed' order.
+    const heldTickers = new Set(held.map((o) => o.ticker));
+    const untrackedTickers = [...positions.keys()].filter((t) => !heldTickers.has(t));
+    if (untrackedTickers.length) {
+      console.warn(`[auto-trader] ℹ️  ${untrackedTickers.length} account position(s) with no open DB order: ${untrackedTickers.slice(0, 10).join(', ')}`);
+    }
+
+    if (flagged || drift) {
+      console.log(`[auto-trader] positions verify (observe-only): ${confirmed} confirmed, ${flagged} no-position, ${drift} drift of ${held.length} held`);
+    }
+    return { checked: held.length, confirmed, flagged, drift, untracked: untrackedTickers.length };
   }
 
   /**

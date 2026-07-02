@@ -372,6 +372,9 @@ app.get('/auto-trader/pnl', { preHandler: [app.authenticate] }, async () => getA
 // Trigger settlement check on demand
 app.post('/auto-trader/settle', { preHandler: [app.authenticate], ...autoTraderRateLimit }, async () => autoTrader.checkSettlements());
 
+// Verify believed-held orders against the account's real /portfolio/positions on demand.
+app.post('/auto-trader/verify-fills', { preHandler: [app.authenticate], ...autoTraderRateLimit }, async () => autoTrader.verifyFilledPositions());
+
 // Hot-reload the adaptive EV calibration from calibration.json (recalibrate.js
 // calls this after an auto-applied fit, so no restart is needed).
 app.post('/auto-trader/reload-calibration', { preHandler: [app.authenticate] }, async () => autoTrader.reloadCalibration());
@@ -674,6 +677,10 @@ setInterval(async () => {
   try {
     const { filled, canceled } = await autoTrader.checkOpenOrders();
     if (filled || canceled) console.log(`[auto-trader] reconcile: ${filled} filled, ${canceled} canceled`);
+    // Then run the OBSERVE-ONLY positions check (logs mismatches; no record
+    // changes, no email — the placement-time check handles genuine non-fills).
+    const { flagged, drift } = await autoTrader.verifyFilledPositions();
+    if (flagged || drift) console.log(`[auto-trader] positions verify (observe-only): ${flagged} no-position, ${drift} drift`);
   } catch (err) {
     console.error('[auto-trader] open-order reconcile error:', err.message);
   }
