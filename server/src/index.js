@@ -404,11 +404,28 @@ const _volOf = (m) => Number(m.volume_24h ?? m.volume_24h_fp ?? m.volume ?? m.vo
 
 async function findMarkets({ limit = 15, maxSpreadCents = 10, windowHours = 48 } = {}) {
   const out = [];
+  const minP = autoTrader.minPriceCents, maxP = autoTrader.maxPriceCents;
+  const inBand = (p) => Number.isFinite(p) && p >= minP && p <= maxP;
 
-  // 1) Proven-flow tickers from our own trade feed, enriched with live books.
-  const active = getActiveKalshiTickersSince(Date.now() - windowHours * 3600_000, 60)
-    .filter((t) => !autoTrader.blockedPrefixes.some((p) => t.ticker.startsWith(p)));
-  for (const t of active.slice(0, 50)) {
+  // Source a DIVERSE candidate set from our own recent-flow feed — the active,
+  // tradeable, non-parlay markets across EVERY category. (The raw exchange
+  // /markets list can't be swept for this: it's tens of thousands of
+  // auto-generated, illiquid MVE parlay markets that bury the real ones and
+  // there's no server-side way to filter them out.) Take the top few tickers
+  // PER SERIES so the book-fetches span categories instead of piling onto
+  // whatever sport is hottest — this is what stops it from only seeing soccer.
+  const PER_SERIES = 8, MAX_FETCH = 90;
+  const bySeries = new Map();
+  for (const t of getActiveKalshiTickersSince(Date.now() - windowHours * 3600_000, 5000)) {
+    if (autoTrader.blockedPrefixes.some((p) => t.ticker.startsWith(p))) continue;
+    const s = t.ticker.split('-')[0];
+    let arr = bySeries.get(s);
+    if (!arr) { arr = []; bySeries.set(s, arr); }
+    if (arr.length < PER_SERIES) arr.push(t); // feed is already trade-count desc
+  }
+  const fetchList = [...bySeries.values()].flat().slice(0, MAX_FETCH);
+
+  for (const t of fetchList) {
     try {
       const res = await fetch(`${KALSHI_TRADING_BASE}/markets/${t.ticker}`);
       if (!res.ok) continue;
@@ -418,6 +435,7 @@ async function findMarkets({ limit = 15, maxSpreadCents = 10, windowHours = 48 }
       const yesAsk = _centsOf(m.yes_ask, m.yes_ask_dollars);
       if (!Number.isFinite(yesBid) || !Number.isFinite(yesAsk) || yesAsk <= yesBid) continue;
       if (yesAsk - yesBid > maxSpreadCents) continue;
+      if (!inBand(yesAsk) && !inBand(100 - yesBid)) continue; // a tradeable favorite must exist (NO ask = 100−yesBid)
       out.push({
         ticker: t.ticker, title: m.title ?? null,
         yes_bid: yesBid, yes_ask: yesAsk, spread_cents: yesAsk - yesBid,
@@ -426,32 +444,11 @@ async function findMarkets({ limit = 15, maxSpreadCents = 10, windowHours = 48 }
         source: 'feed',
       });
     } catch { /* skip ticker */ }
-    await new Promise((r) => setTimeout(r, 120)); // gentle on the API
+    await new Promise((r) => setTimeout(r, 80)); // gentle on the API
   }
-  out.sort((a, b) => b.recent_trades - a.recent_trades);
-
-  // 2) Fallback page scan when the feed is quiet (e.g. WS down): volume-ranked.
-  if (out.length === 0) {
-    const res = await fetch(`${KALSHI_TRADING_BASE}/markets?status=open&limit=1000`);
-    if (!res.ok) throw new Error(`markets fetch failed: HTTP ${res.status}`);
-    const { markets = [] } = await res.json();
-    for (const m of markets) {
-      if (autoTrader.blockedPrefixes.some((p) => m.ticker?.startsWith(p))) continue;
-      const yesBid = _centsOf(m.yes_bid, m.yes_bid_dollars);
-      const yesAsk = _centsOf(m.yes_ask, m.yes_ask_dollars);
-      if (!Number.isFinite(yesBid) || !Number.isFinite(yesAsk)) continue;
-      if (yesBid < 1 || yesAsk > 99 || yesAsk <= yesBid) continue;
-      if (yesAsk - yesBid > maxSpreadCents) continue;
-      out.push({
-        ticker: m.ticker, title: m.title ?? null,
-        yes_bid: yesBid, yes_ask: yesAsk, spread_cents: yesAsk - yesBid,
-        recent_trades: 0, last_trade_min_ago: null,
-        volume_24h: _volOf(m), close_time: m.expected_expiration_time ?? m.close_time ?? null,
-        source: 'scan',
-      });
-    }
-    out.sort((a, b) => b.volume_24h - a.volume_24h);
-  }
+  // Rank by 24h volume (liquidity ⇒ maker fill probability); whale flow stays
+  // visible via recent_trades for the agent to weigh.
+  out.sort((a, b) => (b.volume_24h - a.volume_24h) || (b.recent_trades - a.recent_trades));
 
   // Diversify the returned list by series so one hot category (e.g. World Cup
   // during the tournament) can't fill every slot. `out` is already sorted by
@@ -473,8 +470,11 @@ async function findMarkets({ limit = 15, maxSpreadCents = 10, windowHours = 48 }
 
   return {
     count: markets.length,
+    series_scanned: bySeries.size,   // distinct categories sourced from the feed
+    books_fetched: fetchList.length, // markets whose live book we checked
+    candidates: out.length,          // tight-book favorites in-band after filtering
     note: out.length === 0
-      ? 'No markets with a usable book found — taker flow is absent right now; placing maker orders is unlikely to fill.'
+      ? 'No active market across the sourced categories has a tight two-sided book with a favorite in the price band right now.'
       : undefined,
     markets,
   };
